@@ -1,0 +1,151 @@
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local player = Players.LocalPlayer
+local playerGui = player:WaitForChild("PlayerGui")
+local rf = ReplicatedStorage:WaitForChild("RemoteFunction")
+
+local TowersToBuy = {
+    "Engineer",
+    "Brawler",
+    "Accelerator",
+    "Hacker",
+    "Necromancer",
+    "Turret",
+    "Mercenary Base",
+    "Pursuit",
+    "DJ Booth",
+    "Commander",
+    "Tesla",
+    "Mortar",
+    "Minigunner",
+    "Ranger",
+    "Gatling Gun",
+    "Hunter",
+    "Rocketeer",
+    "Crook Boss",
+    "Trapper",
+    "Shotgunner",
+    "Electroshocker",
+    "Pyromancer",
+    "Medic",
+    "Assassin",
+    "Farm",
+    "Ace Pilot",
+    "Freezer",
+    "Military Base",
+    "Militant",
+    "Paintballer",
+    "Scout",
+    "Soldier",
+    "Boomerang",
+    "Sniper",
+    "Demoman"
+}
+
+local function GetStat(name)
+    local obj = player:FindFirstChild(name)
+
+    if obj and obj.Value ~= nil then
+        return tonumber(obj.Value) or 0
+    end
+
+    local attr = player:GetAttribute(name)
+
+    if attr ~= nil then
+        return tonumber(attr) or 0
+    end
+
+    local leaderstats = player:FindFirstChild("leaderstats")
+    local stat = leaderstats and leaderstats:FindFirstChild(name)
+
+    if stat and stat.Value ~= nil then
+        return tonumber(stat.Value) or 0
+    end
+
+    return 0
+end
+
+local function GetTowerContainer()
+    return playerGui
+        :WaitForChild("ReactUniversalInventoryView")
+        :WaitForChild("Holder")
+        :WaitForChild("windowFrame")
+        :WaitForChild("towersInventoryFrame")
+        :WaitForChild("towerContainer")
+end
+
+local function IsTowerOwned(towerName)
+    local towerContainer = GetTowerContainer()
+
+    for _, tower in ipairs(towerContainer:GetDescendants()) do
+        if tower:IsA("Frame") then
+            local refLabel = tower:FindFirstChild("refLabel", true)
+            local background = tower:FindFirstChild("background", true)
+
+            if refLabel
+                and background
+                and refLabel.Text == towerName then
+
+                return background.Visible == false
+            end
+        end
+    end
+
+    return false
+end
+
+local function TryBuyTower(towerName)
+    if IsTowerOwned(towerName) then
+        return false
+    end
+
+    local success = pcall(function()
+        rf:InvokeServer(
+            "Shop",
+            "Purchase",
+            "Tower",
+            towerName
+        )
+    end)
+
+    task.wait(0.2)
+
+    if not success then
+        return false
+    end
+
+    return IsTowerOwned(towerName)
+end
+
+local function BuyWhateverAffordable()
+    local boughtAny = false
+
+    for _, towerName in ipairs(TowersToBuy) do
+        if not IsTowerOwned(towerName) then
+            local beforeCoins = GetStat("Coins")
+            local beforeGems = GetStat("Gems")
+
+            local bought = TryBuyTower(towerName)
+
+            if bought then
+                boughtAny = true
+
+                local afterCoins = GetStat("Coins")
+                local afterGems = GetStat("Gems")
+
+                if afterCoins > beforeCoins then
+                    afterCoins = beforeCoins
+                end
+
+                if afterGems > beforeGems then
+                    afterGems = beforeGems
+                end
+            end
+        end
+    end
+
+    return boughtAny
+end
+
+BuyWhateverAffordable()
