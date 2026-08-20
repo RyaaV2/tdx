@@ -4811,27 +4811,34 @@ task.spawn(function()
                         end
 
                         if rewardLevel >= 175 then
-                            local trackedCoins = GetTrackedCoins()
-
-                            if trackedCoins >= GATLING_PRICE then
-                                task.spawn(function()
-                                    task.wait(0.5)
-                                    statusDisplay.Text = "Status: Returning to Lobby for Gatling..."
-                                    BackToLobby()
-                                end)
-                            elseif currentMode == "Hardcore" then
-                                task.spawn(function()
-                                    task.wait(0.5)
-                                    RouteProgressionByLevel(
-                                        rewardLevel,
-                                        true
-                                    )
-                                end)
-                            else
+                            if AutoMaxMode then
                                 task.spawn(function()
                                     task.wait(0.5)
                                     RestartMatchAndRerunStrategy()
                                 end)
+                            else
+                                local trackedCoins = GetTrackedCoins()
+
+                                if trackedCoins >= GATLING_PRICE then
+                                    task.spawn(function()
+                                        task.wait(0.5)
+                                        statusDisplay.Text = "Status: Returning to Lobby for Gatling..."
+                                        BackToLobby()
+                                    end)
+                                elseif currentMode == "Hardcore" then
+                                    task.spawn(function()
+                                        task.wait(0.5)
+                                        RouteProgressionByLevel(
+                                            rewardLevel,
+                                            true
+                                        )
+                                    end)
+                                else
+                                    task.spawn(function()
+                                        task.wait(0.5)
+                                        RestartMatchAndRerunStrategy()
+                                    end)
+                                end
                             end
                         else
                             local reachedTarget =
@@ -4901,7 +4908,11 @@ task.spawn(function()
                     local expectedDifficulty =
                         IsWinStrategy() and "Easy" or GetProgressModeName(displayLevel)
 
-                    if expectedDifficulty == "Completed" then
+                    if AutoMaxMode and displayLevel >= 175 then
+                        expectedDifficulty = currentDifficulty
+                    end
+
+                    if expectedDifficulty == "Completed" and not AutoMaxMode then
                         statusDisplay.Text = "Status: Completed"
                     elseif currentDifficulty
                         and currentDifficulty ~= expectedDifficulty then
