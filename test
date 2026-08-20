@@ -3082,7 +3082,7 @@ local AUTO_MAX_FALLBACK_TOWER_PRICES = {
 }
 
 
-local AUTO_MAX_SKILL_PHASES = {
+local AUTO_MAX_EARLY_SKILL_PHASES = {
     {
         {2, 10},
         {15, 10},
@@ -3115,7 +3115,10 @@ local AUTO_MAX_SKILL_PHASES = {
         {6, 25},
         {3, 40},
         {11, 15}
-    },
+    }
+}
+
+local AUTO_MAX_FINAL_SKILL_PHASES = {
     {
         {17, 20}
     },
@@ -3194,8 +3197,8 @@ local function GetAutoMaxSkillPurchaseRemote()
     return skills and skills:FindFirstChild("RF:Purchase")
 end
 
-local function AreAutoMaxSkillsMaxed()
-    for _, phase in ipairs(AUTO_MAX_SKILL_PHASES) do
+local function AreAutoMaxSkillPhasesMaxed(phases)
+    for _, phase in ipairs(phases) do
         for _, entry in ipairs(phase) do
             local nodeId = entry[1]
             local targetLevel = entry[2]
@@ -3258,26 +3261,25 @@ local function TryAutoMaxSkillUpgrade(nodeId, targetLevel)
     return false, "not_affordable_or_locked"
 end
 
-local function RunAutoMaxSkillTreePass()
+local function RunAutoMaxSkillPhasePass(phases, phaseLabel)
     if game.PlaceId ~= LOBBY_PLACE_ID then
         return "unavailable"
     end
 
-    statusDisplay.Text = "Status: Checking Skill Tree..."
+    statusDisplay.Text = "Status: Checking " .. tostring(phaseLabel) .. "..."
 
     if not WaitForAutoMaxSkillTree(15) then
-        warn("[AUTO MAX] Skill tree is unavailable; continuing to Lay By")
-        return "unavailable"
+        warn("[AUTO MAX] Skill tree is unavailable; farming Lay By again")
+        return "needs_farm"
     end
 
-    if AreAutoMaxSkillsMaxed() then
-        warn("[AUTO MAX] Skill Tree is fully maxed")
+    if AreAutoMaxSkillPhasesMaxed(phases) then
         return "maxed"
     end
 
     local upgradedAny = false
 
-    for _, phase in ipairs(AUTO_MAX_SKILL_PHASES) do
+    for _, phase in ipairs(phases) do
         for _, entry in ipairs(phase) do
             local nodeId = entry[1]
             local targetLevel = entry[2]
@@ -3286,7 +3288,8 @@ local function RunAutoMaxSkillTreePass()
                 local current, max = GetAutoMaxSkillLevel(nodeId)
 
                 if current == nil or max == nil then
-                    break
+                    warn("[AUTO MAX] Skill node unavailable; farming Lay By again")
+                    return "needs_farm"
                 end
 
                 if current >= math.min(targetLevel, max) then
@@ -3311,7 +3314,6 @@ local function RunAutoMaxSkillTreePass()
                         .. tostring(result)
                         .. ")"
                     )
-
                     warn("[AUTO MAX] First unavailable Skill Tree upgrade reached; farming Lay By again")
                     return "needs_farm"
                 end
@@ -3319,17 +3321,167 @@ local function RunAutoMaxSkillTreePass()
         end
     end
 
-    if AreAutoMaxSkillsMaxed() then
-        warn("[AUTO MAX] Skill Tree is fully maxed")
+    if AreAutoMaxSkillPhasesMaxed(phases) then
         return "maxed"
     end
 
     if upgradedAny then
-        warn("[AUTO MAX] Skill purchases finished for this lobby pass; farming Lay By again")
         return "needs_farm"
     end
 
-    warn("[AUTO MAX] No Skill Tree upgrades are affordable/available; farming Lay By again")
+    return "needs_farm"
+end
+
+
+local AUTO_MAX_TOWERS_TO_BUY = {
+    "Engineer",
+    "Brawler",
+    "Accelerator",
+    "Hacker",
+    "Necromancer",
+    "Turret",
+    "Mercenary Base",
+    "Pursuit",
+    "DJ Booth",
+    "Commander",
+    "Tesla",
+    "Mortar",
+    "Minigunner",
+    "Ranger",
+    "Gatling Gun",
+    "Hunter",
+    "Rocketeer",
+    "Crook Boss",
+    "Trapper",
+    "Shotgunner",
+    "Electroshocker",
+    "Pyromancer",
+    "Medic",
+    "Assassin",
+    "Farm",
+    "Ace Pilot",
+    "Freezer",
+    "Military Base",
+    "Militant",
+    "Paintballer",
+    "Scout",
+    "Soldier",
+    "Boomerang",
+    "Sniper",
+    "Demoman"
+}
+
+local AUTO_MAX_TOWER_INFO = {
+    ["Engineer"] = {Type = "Currency", Currency = "Gems", Price = 4500, Level = 50},
+    ["Brawler"] = {Type = "Currency", Currency = "Gems", Price = 1250, Level = 50},
+    ["Accelerator"] = {Type = "Currency", Currency = "Gems", Price = 2500, Level = 50},
+    ["Hacker"] = {Type = "Currency", Currency = "Gems", Price = 5500, Level = 50},
+    ["Necromancer"] = {Type = "Currency", Currency = "Gems", Price = 2250, Level = 50},
+    ["Turret"] = {Type = "Level", Level = 50},
+    ["Mercenary Base"] = {Type = "Level", Level = 150},
+    ["Pursuit"] = {Type = "Currency", Currency = "Coins", Price = 15000, Level = 100},
+    ["DJ Booth"] = {Type = "Currency", Currency = "Coins", Price = 5000},
+    ["Commander"] = {Type = "Currency", Currency = "Coins", Price = 4000},
+    ["Tesla"] = {Type = "Currency", Currency = "Coins", Price = 6000},
+    ["Mortar"] = {Type = "Level", Level = 75},
+    ["Minigunner"] = {Type = "Currency", Currency = "Coins", Price = 8000},
+    ["Ranger"] = {Type = "Currency", Currency = "Coins", Price = 12000},
+    ["Gatling Gun"] = {Type = "Currency", Currency = "Coins", Price = 35000, Level = 175},
+    ["Hunter"] = {Type = "Currency", Currency = "Coins", Price = 1000},
+    ["Rocketeer"] = {Type = "Currency", Currency = "Coins", Price = 2500},
+    ["Crook Boss"] = {Type = "Level", Level = 30},
+    ["Trapper"] = {Type = "Currency", Currency = "Coins", Price = 3000},
+    ["Shotgunner"] = {Type = "Currency", Currency = "Coins", Price = 850},
+    ["Electroshocker"] = {Type = "Currency", Currency = "Coins", Price = 2500},
+    ["Pyromancer"] = {Type = "Currency", Currency = "Coins", Price = 1250},
+    ["Medic"] = {Type = "Currency", Currency = "Coins", Price = 2000},
+    ["Assassin"] = {Type = "Currency", Currency = "Coins", Price = 800},
+    ["Farm"] = {Type = "Currency", Currency = "Coins", Price = 2000},
+    ["Ace Pilot"] = {Type = "Currency", Currency = "Coins", Price = 1500},
+    ["Freezer"] = {Type = "Currency", Currency = "Coins", Price = 650},
+    ["Military Base"] = {Type = "Currency", Currency = "Coins", Price = 4000},
+    ["Militant"] = {Type = "Currency", Currency = "Coins", Price = 800},
+    ["Paintballer"] = {Type = "Currency", Currency = "Coins", Price = 100},
+    ["Scout"] = {Type = "Free"},
+    ["Soldier"] = {Type = "Currency", Currency = "Coins", Price = 350},
+    ["Boomerang"] = {Type = "Unavailable"},
+    ["Sniper"] = {Type = "Free"},
+    ["Demoman"] = {Type = "Currency", Currency = "Coins", Price = 200}
+}
+
+local function AreAllAutoMaxAvailableTowersOwned()
+    for _, towerName in ipairs(AUTO_MAX_TOWERS_TO_BUY) do
+        local info = AUTO_MAX_TOWER_INFO[towerName]
+
+        if info
+            and info.Type ~= "Unavailable"
+            and not IsTowerOwned(towerName) then
+
+            return false
+        end
+    end
+
+    return true
+end
+
+local function RunAutoMaxTowerBuyerPass()
+    if AreAllAutoMaxAvailableTowersOwned() then
+        warn("[AUTO MAX] All available towers are owned")
+        return "all_owned"
+    end
+
+    local boughtAny = false
+    local level = GetStat("Level")
+
+    for _, towerName in ipairs(AUTO_MAX_TOWERS_TO_BUY) do
+        local info = AUTO_MAX_TOWER_INFO[towerName]
+
+        if info
+            and info.Type ~= "Unavailable"
+            and not IsTowerOwned(towerName) then
+
+            local shouldTry = false
+
+            if info.Type == "Free" then
+                shouldTry = true
+            elseif info.Type == "Level" then
+                shouldTry = level >= (info.Level or 0)
+            elseif info.Type == "Currency" then
+                local levelReady =
+                    not info.Level
+                    or level >= info.Level
+
+                local balance =
+                    GetAutoMaxResource(info.Currency)
+
+                shouldTry =
+                    levelReady
+                    and balance >= (info.Price or 0)
+            end
+
+            if shouldTry then
+                BuyTowerIfNeeded(towerName)
+                task.wait(0.25)
+
+                if IsTowerOwned(towerName) then
+                    boughtAny = true
+                    statusDisplay.Text = "Status: Bought " .. tostring(towerName)
+                end
+            end
+        end
+    end
+
+    if AreAllAutoMaxAvailableTowersOwned() then
+        warn("[AUTO MAX] All available towers are now owned")
+        return "all_owned"
+    end
+
+    if boughtAny then
+        warn("[AUTO MAX] Tower buyer bought what it could; farming Lay By again")
+        return "needs_farm"
+    end
+
+    warn("[AUTO MAX] No tower can be bought right now; farming Lay By again")
     return "needs_farm"
 end
 
@@ -4628,23 +4780,62 @@ local function RouteAutoMaxLevel175(directMatchmaking)
         return false
     end
 
-    local skillResult = RunAutoMaxSkillTreePass()
+    local earlySkillResult =
+        RunAutoMaxSkillPhasePass(
+            AUTO_MAX_EARLY_SKILL_PHASES,
+            "Skill Tree Phases 1-3"
+        )
 
-    if skillResult == "maxed" then
-        Settings.AutoMaxSkillTreeMaxed = true
+    if earlySkillResult ~= "maxed" then
+        Settings.AutoMaxSkillTreeMaxed = false
         SaveSettings()
-        targetDisplay.Text = "Target: Auto Buy All Towers"
-        statusDisplay.Text = "Status: Skill Tree Maxed - Tower Buyer Pending"
-        return false
+        targetDisplay.Text = "Target: Frost Lay By"
+        statusDisplay.Text = "Status: Early Skill Tree Needs More Resources - Starting Lay By..."
+        Settings.AutoMaxLayByPending = true
+        SaveSettings()
+        return LaunchFrostLayBy()
     end
 
-    Settings.AutoMaxSkillTreeMaxed = false
+    targetDisplay.Text = "Target: Auto Buy All Towers"
+    statusDisplay.Text = "Status: Buying Available Towers..."
+
+    local towerResult = RunAutoMaxTowerBuyerPass()
+
+    if towerResult ~= "all_owned" then
+        Settings.AutoMaxSkillTreeMaxed = false
+        SaveSettings()
+        targetDisplay.Text = "Target: Frost Lay By"
+        statusDisplay.Text = "Status: Towers Need More Resources - Starting Lay By..."
+        Settings.AutoMaxLayByPending = true
+        SaveSettings()
+        return LaunchFrostLayBy()
+    end
+
+    targetDisplay.Text = "Target: Final Skill Tree"
+    statusDisplay.Text = "Status: Towers Complete - Finishing Skill Tree..."
+
+    local finalSkillResult =
+        RunAutoMaxSkillPhasePass(
+            AUTO_MAX_FINAL_SKILL_PHASES,
+            "Final Skill Tree"
+        )
+
+    if finalSkillResult ~= "maxed" then
+        Settings.AutoMaxSkillTreeMaxed = false
+        SaveSettings()
+        targetDisplay.Text = "Target: Frost Lay By"
+        statusDisplay.Text = "Status: Final Skill Tree Needs More Resources - Starting Lay By..."
+        Settings.AutoMaxLayByPending = true
+        SaveSettings()
+        return LaunchFrostLayBy()
+    end
+
+    Settings.AutoMaxSkillTreeMaxed = true
+    Settings.AutoMaxLayByPending = false
     SaveSettings()
-    targetDisplay.Text = "Target: Frost Lay By"
-    statusDisplay.Text = "Status: Skill Tree Needs More Resources - Starting Lay By..."
-    Settings.AutoMaxLayByPending = true
-    SaveSettings()
-    return LaunchFrostLayBy()
+    targetDisplay.Text = "Target: Complete"
+    statusDisplay.Text = "Status: Auto Max Complete"
+    return false
 end
 
 local function RouteProgressionByLevel(level, directMatchmaking)
