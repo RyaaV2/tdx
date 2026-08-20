@@ -215,7 +215,8 @@ local Settings = {
     GatlingUnlocked = false,
     AutoMaxProgression = false,
     AutoMaxLayByPending = false,
-    AutoMaxCoinFarmTower = ""
+    AutoMaxCoinFarmTower = "",
+    AutoMaxSkillTreeMaxed = false
 }
 
 local lobbyProgressLoaded = false
@@ -3080,6 +3081,256 @@ local AUTO_MAX_FALLBACK_TOWER_PRICES = {
     Hunter = 1000
 }
 
+
+local AUTO_MAX_SKILL_PHASES = {
+    {
+        {2, 10},
+        {15, 10},
+        {7, 10},
+        {13, 10},
+        {1, 10},
+        {8, 10},
+        {9, 10},
+        {5, 10},
+        {3, 10},
+        {4, 10},
+        {16, 10},
+        {6, 10},
+        {10, 10}
+    },
+    {
+        {15, 25},
+        {9, 25},
+        {10, 25},
+        {7, 20},
+        {13, 25},
+        {1, 20},
+        {8, 20}
+    },
+    {
+        {2, 25},
+        {5, 25},
+        {4, 25},
+        {16, 25},
+        {6, 25},
+        {3, 40},
+        {11, 15}
+    },
+    {
+        {17, 20}
+    },
+    {
+        {12, 20}
+    },
+    {
+        {14, 10}
+    }
+}
+
+local AUTO_MAX_SKILL_NAMES = {
+    [1] = "Enhanced Optics",
+    [2] = "Resourcefulness",
+    [3] = "Fortify",
+    [4] = "Over-Heal",
+    [5] = "Fight Dirty",
+    [6] = "Extreme Conditioning",
+    [7] = "Stonks",
+    [8] = "Expanded Barracks",
+    [9] = "Improved Gunpowder",
+    [10] = "Beefed Up Minions",
+    [11] = "Precision",
+    [12] = "Scavenger",
+    [13] = "Accelerator",
+    [14] = "Re-enforcements",
+    [15] = "Bigger Budget",
+    [16] = "Bandages",
+    [17] = "Scholar"
+}
+
+local function GetAutoMaxSkillLevel(nodeId)
+    local node = workspace:FindFirstChild(tostring(nodeId))
+    local gui = node and node:FindFirstChild("TileSurfaceGui")
+    local frame = gui and gui:FindFirstChild("Frame")
+    local levelLabel = frame and frame:FindFirstChild("SkillLevel")
+
+    if not levelLabel then
+        return nil, nil
+    end
+
+    local current, max =
+        tostring(levelLabel.Text):match("(%d+)%s*/%s*(%d+)")
+
+    return tonumber(current), tonumber(max)
+end
+
+local function WaitForAutoMaxSkillTree(timeoutSeconds)
+    local timeoutAt = os.clock() + (tonumber(timeoutSeconds) or 15)
+
+    repeat
+        local ready = true
+
+        for nodeId = 1, 17 do
+            local current, max = GetAutoMaxSkillLevel(nodeId)
+
+            if current == nil or max == nil then
+                ready = false
+                break
+            end
+        end
+
+        if ready then
+            return true
+        end
+
+        task.wait(1)
+    until os.clock() >= timeoutAt
+
+    return false
+end
+
+local function GetAutoMaxSkillPurchaseRemote()
+    local network = ReplicatedStorage:FindFirstChild("Network")
+    local skills = network and network:FindFirstChild("Skills")
+    return skills and skills:FindFirstChild("RF:Purchase")
+end
+
+local function AreAutoMaxSkillsMaxed()
+    for _, phase in ipairs(AUTO_MAX_SKILL_PHASES) do
+        for _, entry in ipairs(phase) do
+            local nodeId = entry[1]
+            local targetLevel = entry[2]
+            local current, max = GetAutoMaxSkillLevel(nodeId)
+
+            if current == nil or max == nil then
+                return false
+            end
+
+            if current < math.min(targetLevel, max) then
+                return false
+            end
+        end
+    end
+
+    return true
+end
+
+local function TryAutoMaxSkillUpgrade(nodeId, targetLevel)
+    local current, max = GetAutoMaxSkillLevel(nodeId)
+
+    if current == nil or max == nil then
+        return false, "unavailable"
+    end
+
+    local target = math.min(targetLevel, max)
+
+    if current >= target then
+        return false, "target_reached"
+    end
+
+    local purchaseSkill = GetAutoMaxSkillPurchaseRemote()
+
+    if not purchaseSkill then
+        return false, "purchase_remote_missing"
+    end
+
+    local before = current
+
+    local ok = pcall(function()
+        purchaseSkill:InvokeServer(tostring(nodeId))
+    end)
+
+    if not ok then
+        return false, "purchase_error"
+    end
+
+    local timeoutAt = os.clock() + 2
+
+    repeat
+        task.wait(0.15)
+
+        local newLevel = GetAutoMaxSkillLevel(nodeId)
+
+        if newLevel and newLevel > before then
+            return true, newLevel
+        end
+    until os.clock() >= timeoutAt
+
+    return false, "not_affordable_or_locked"
+end
+
+local function RunAutoMaxSkillTreePass()
+    if game.PlaceId ~= LOBBY_PLACE_ID then
+        return "unavailable"
+    end
+
+    statusDisplay.Text = "Status: Checking Skill Tree..."
+
+    if not WaitForAutoMaxSkillTree(15) then
+        warn("[AUTO MAX] Skill tree is unavailable; continuing to Lay By")
+        return "unavailable"
+    end
+
+    if AreAutoMaxSkillsMaxed() then
+        warn("[AUTO MAX] Skill Tree is fully maxed")
+        return "maxed"
+    end
+
+    local upgradedAny = false
+
+    for _, phase in ipairs(AUTO_MAX_SKILL_PHASES) do
+        for _, entry in ipairs(phase) do
+            local nodeId = entry[1]
+            local targetLevel = entry[2]
+
+            while true do
+                local current, max = GetAutoMaxSkillLevel(nodeId)
+
+                if current == nil or max == nil then
+                    break
+                end
+
+                if current >= math.min(targetLevel, max) then
+                    break
+                end
+
+                local upgraded, result =
+                    TryAutoMaxSkillUpgrade(nodeId, targetLevel)
+
+                if upgraded then
+                    upgradedAny = true
+                    statusDisplay.Text =
+                        "Status: Upgraded "
+                        .. tostring(AUTO_MAX_SKILL_NAMES[nodeId])
+                        .. " to "
+                        .. tostring(result)
+                else
+                    warn(
+                        "[AUTO MAX] Cannot upgrade "
+                        .. tostring(AUTO_MAX_SKILL_NAMES[nodeId])
+                        .. " right now ("
+                        .. tostring(result)
+                        .. ")"
+                    )
+                    break
+                end
+            end
+        end
+    end
+
+    if AreAutoMaxSkillsMaxed() then
+        warn("[AUTO MAX] Skill Tree is fully maxed")
+        return "maxed"
+    end
+
+    if upgradedAny then
+        warn("[AUTO MAX] Skill purchases finished for this lobby pass; farming Lay By again")
+        return "needs_farm"
+    end
+
+    warn("[AUTO MAX] No Skill Tree upgrades are affordable/available; farming Lay By again")
+    return "needs_farm"
+end
+
 local FROST_LAYBY_SOURCE = [==[
 if not game:IsLoaded() then
     game.Loaded:Wait()
@@ -4358,7 +4609,20 @@ local function RouteAutoMaxLevel175(directMatchmaking)
         return false
     end
 
+    local skillResult = RunAutoMaxSkillTreePass()
+
+    if skillResult == "maxed" then
+        Settings.AutoMaxSkillTreeMaxed = true
+        SaveSettings()
+        targetDisplay.Text = "Target: Auto Buy All Towers"
+        statusDisplay.Text = "Status: Skill Tree Maxed - Tower Buyer Pending"
+        return false
+    end
+
+    Settings.AutoMaxSkillTreeMaxed = false
+    SaveSettings()
     targetDisplay.Text = "Target: Frost Lay By"
+    statusDisplay.Text = "Status: Skill Tree Needs More Resources - Starting Lay By..."
     Settings.AutoMaxLayByPending = true
     SaveSettings()
     return LaunchFrostLayBy()
