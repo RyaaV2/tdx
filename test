@@ -3311,7 +3311,9 @@ local function RunAutoMaxSkillTreePass()
                         .. tostring(result)
                         .. ")"
                     )
-                    break
+
+                    warn("[AUTO MAX] First unavailable Skill Tree upgrade reached; farming Lay By again")
+                    return "needs_farm"
                 end
             end
         end
