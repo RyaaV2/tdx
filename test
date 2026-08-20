@@ -4866,6 +4866,28 @@ UpdateToggleAppearance()
 
 local rewardGameOverHandled = false
 local restartMatchLoopRunning = false
+local LoseStrategyGameOverCount = 0
+
+local function CountLoseStrategyGameOver(currentMode)
+    if IsWinStrategy() then
+        return false
+    end
+
+    if currentMode ~= "Easy"
+        and currentMode ~= "Molten"
+        and currentMode ~= "Hardcore" then
+        return false
+    end
+
+    LoseStrategyGameOverCount += 1
+
+    if LoseStrategyGameOverCount >= 10 then
+        LoseStrategyGameOverCount = 0
+        return true
+    end
+
+    return false
+end
 
 local function HandleRewardMilestone(currentMode, newLevel)
     newLevel = tonumber(newLevel) or 0
@@ -5106,8 +5128,17 @@ task.spawn(function()
 
                         local currentMode = GetCurrentDifficulty()
                         local currentTarget
+                        local shouldRefreshLoseServer =
+                            CountLoseStrategyGameOver(currentMode)
 
-                        if IsWinStrategy() then
+                        if shouldRefreshLoseServer then
+                            task.spawn(function()
+                                task.wait(0.5)
+                                statusDisplay.Text =
+                                    "Status: 10 Lose Matches Complete - Returning to Lobby..."
+                                BackToLobby()
+                            end)
+                        elseif IsWinStrategy() then
                             currentTarget = GetTargetLevel(oldLevel)
                         elseif currentMode == "Easy" then
                             currentTarget = 15
@@ -5119,10 +5150,11 @@ task.spawn(function()
                             currentTarget = GetTargetLevel(oldLevel)
                         end
 
-                        local autoMaxCoinFarmTower =
-                            AutoMaxMode and GetAutoMaxCoinFarmTower() or nil
+                        if not shouldRefreshLoseServer then
+                            local autoMaxCoinFarmTower =
+                                AutoMaxMode and GetAutoMaxCoinFarmTower() or nil
 
-                        if autoMaxCoinFarmTower and rewardLevel < 175 then
+                            if autoMaxCoinFarmTower and rewardLevel < 175 then
                             local neededPrice =
                                 GetAutoMaxFallbackTowerPrice(autoMaxCoinFarmTower)
                                 or math.huge
@@ -5146,7 +5178,25 @@ task.spawn(function()
                             if AutoMaxMode then
                                 task.spawn(function()
                                     task.wait(0.5)
-                                    RestartMatchAndRerunStrategy()
+
+                                    local gameStateReplicator =
+                                        ReplicatedStorage
+                                            :FindFirstChild("StateReplicators")
+                                    gameStateReplicator =
+                                        gameStateReplicator
+                                        and gameStateReplicator:FindFirstChild("GameStateReplicator")
+
+                                    local won =
+                                        gameStateReplicator
+                                        and gameStateReplicator:GetAttribute("Won") == true
+
+                                    if won then
+                                        statusDisplay.Text = "Status: Lay By Won - Returning to Lobby..."
+                                        BackToLobby()
+                                    else
+                                        statusDisplay.Text = "Status: Lay By Lost - Returning to Lobby..."
+                                        BackToLobby()
+                                    end
                                 end)
                             else
                                 local trackedCoins = GetTrackedCoins()
@@ -5191,6 +5241,7 @@ task.spawn(function()
                                     RestartMatchAndRerunStrategy()
                                 end)
                             end
+                        end
                         end
                     else
                         statusDisplay.Text = "Status: Failed to read reward level"
