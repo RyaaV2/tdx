@@ -4810,13 +4810,7 @@ task.spawn(function()
                             currentTarget = GetTargetLevel(oldLevel)
                         end
 
-                        if rewardLevel >= 175 and AutoMaxMode then
-                            task.spawn(function()
-                                task.wait(0.5)
-                                statusDisplay.Text = "Status: Returning to Lobby to Check Auto Max..."
-                                BackToLobby()
-                            end)
-                        elseif rewardLevel >= 175 then
+                        if rewardLevel >= 175 then
                             local trackedCoins = GetTrackedCoins()
 
                             if trackedCoins >= GATLING_PRICE then
