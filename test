@@ -4235,6 +4235,23 @@ StartLoopAbility(
 local LayByLaunching = false
 
 local function GetAutoMaxResource(name)
+    if name == "Gems" then
+        local Stats = shared.AutoProgressStats
+
+        if Stats and Stats.GetSnapshot then
+            local ok, snapshot = pcall(function()
+                return Stats.GetSnapshot()
+            end)
+
+            if ok
+                and type(snapshot) == "table"
+                and snapshot.Gems ~= nil then
+
+                return tonumber(snapshot.Gems) or 0
+            end
+        end
+    end
+
     return tonumber(GetStat(name)) or 0
 end
 
