@@ -85,23 +85,19 @@ local function BackToLobby()
     local teleportFolder = network and network:FindFirstChild("Teleport")
     local backToLobby = teleportFolder and teleportFolder:FindFirstChild("RE:backToLobby")
 
-    local remoteWorked = false
-
     if backToLobby then
-        remoteWorked = pcall(function()
+        pcall(function()
             backToLobby:FireServer()
         end)
     end
 
-    if remoteWorked then
-        task.wait(5)
+    task.wait(5)
 
-        if game.PlaceId == LOBBY_PLACE_ID then
-            return true
-        end
+    if game.PlaceId == LOBBY_PLACE_ID then
+        return true
     end
 
-    warn("[BACK TO LOBBY] Remote failed or did not teleport, using PlaceId fallback")
+    warn("[BACK TO LOBBY] Still not in lobby after 5 seconds, using PlaceId fallback")
 
     local ok = pcall(function()
         TeleportService:Teleport(
