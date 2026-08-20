@@ -1,5 +1,44 @@
 local Globals = getgenv()
 
+local RawWarn = warn
+local RawPrint = print
+local PrintProtectionInstalled = false
+
+local function ProtectedNoop(...)
+end
+
+local function InstallPrintProtection()
+    if PrintProtectionInstalled then
+        return
+    end
+
+    PrintProtectionInstalled = true
+
+    if hookfunction then
+        local OriginalPrint
+
+        OriginalPrint = hookfunction(print, function(...)
+            if Globals.AutoProgressProtectionActive == true then
+                RawWarn("Cannot print while auto progression is active (Protected By Rya)")
+                return
+            end
+
+            return OriginalPrint(...)
+        end)
+    else
+        Globals.print = function(...)
+            if Globals.AutoProgressProtectionActive == true then
+                RawWarn("Cannot print while auto progression is active (Protected By Rya)")
+                return
+            end
+
+            return RawPrint(...)
+        end
+    end
+end
+
+InstallPrintProtection()
+
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
@@ -52,7 +91,7 @@ local function ReturnToPrivateLobby()
     end)
 
     if not ok then
-        warn("[PRIVATE SERVER] Failed to return to private lobby:", err)
+        ProtectedNoop("[PRIVATE SERVER] Failed to return to private lobby:", err)
         return false
     end
 
@@ -97,7 +136,7 @@ local function BackToLobby()
         return true
     end
 
-    warn("[BACK TO LOBBY] Still not in lobby after 5 seconds, using PlaceId fallback")
+    ProtectedNoop("[BACK TO LOBBY] Still not in lobby after 5 seconds, using PlaceId fallback")
 
     local ok = pcall(function()
         TeleportService:Teleport(
@@ -145,7 +184,7 @@ local function RecordMatchStartCoins()
     MatchStartCoins = math.max(liveCoins, CurrentTrackedCoins or 0)
     CurrentTrackedCoins = MatchStartCoins
 
-    
+
 end
 
 local function UpdateTrackedCoinsFromReward()
@@ -168,9 +207,9 @@ local function UpdateTrackedCoinsFromReward()
 
     CurrentTrackedCoins = (tonumber(MatchStartCoins) or 0) + reward
 
-    
-    
-    
+
+
+
 
     return CurrentTrackedCoins, reward
 end
@@ -181,7 +220,7 @@ local function StartMatchTimeout()
 
     RecordMatchStartCoins()
 
-    
+
 
     task.spawn(function()
         task.wait(15 * 60)
@@ -198,7 +237,7 @@ local function StartMatchTimeout()
             return
         end
 
-        warn("[ANTI STUCK] GameOver did not happen within 15 minutes, returning to lobby")
+        ProtectedNoop("[ANTI STUCK] GameOver did not happen within 15 minutes, returning to lobby")
         ResetMatchTimeout()
         BackToLobby()
     end)
@@ -354,7 +393,7 @@ local function AntiStuck()
                 secondsStuck += 1
 
                 if secondsStuck >= 60 then
-                    
+
 
                     pcall(function()
                         TeleportService:Teleport(
@@ -375,14 +414,14 @@ end
 AntiStuck()
 
 local function WaitUntilLoaded()
-    
+
 
     while IsLoading() do
-        
+
         task.wait(1)
     end
 
-    
+
 end
 
 local function GetStat(name)
@@ -668,7 +707,7 @@ local function CaptureRewardLevel()
 end
 
 local function BuyTower(towerName)
-    
+
 
     local success, result = pcall(function()
         return rf:InvokeServer(
@@ -680,7 +719,7 @@ local function BuyTower(towerName)
     end)
 
     if not success then
-        warn("Failed to buy " .. towerName)
+        ProtectedNoop("Failed to buy " .. towerName)
         return nil
     end
 
@@ -694,7 +733,7 @@ local function IsTowerOwned(targetTower)
     )
 
     if not inventory then
-        warn("Inventory GUI not found.")
+        ProtectedNoop("Inventory GUI not found.")
         return false
     end
 
@@ -723,11 +762,11 @@ end
 
 local function BuyTowerIfNeeded(towerName)
     if IsTowerOwned(towerName) then
-        
+
         return true
     end
 
-    
+
     return BuyTower(towerName)
 end
 
@@ -817,7 +856,7 @@ local function StartStoryTimeout(rep, difficulty)
     local myToken = StoryTimeoutToken
     local storyName = STORY_MISSIONS[difficulty] or tostring(difficulty)
 
-    
+
 
     task.spawn(function()
         task.wait(STORY_TIMEOUT)
@@ -839,7 +878,7 @@ local function StartStoryTimeout(rep, difficulty)
             return
         end
 
-        warn(
+        ProtectedNoop(
             "[STORY ANTI STUCK]",
             storyName,
             "did not reach GameOver within 5 minutes. Returning to lobby..."
@@ -1454,7 +1493,7 @@ local function GetLobbyBoardMaps()
 
             if title then
                 maps[i] = title.Text
-                
+
             end
         end
     end
@@ -1514,7 +1553,7 @@ local function WaitForTargetMapWithFallback(targetMaps, difficulty)
     local selectedMap = FindTargetMap(targetMaps)
 
     if selectedMap then
-        
+
         return selectedMap
     end
 
@@ -1522,12 +1561,12 @@ local function WaitForTargetMapWithFallback(targetMaps, difficulty)
         selectedMap = GetAnyTargetMap(targetMaps)
 
         if selectedMap then
-            
+
             return selectedMap
         end
     end
 
-    
+
 
     RemoteEvent:FireServer(
         "LobbyVoting",
@@ -1539,11 +1578,11 @@ local function WaitForTargetMapWithFallback(targetMaps, difficulty)
     selectedMap = FindTargetMap(targetMaps)
 
     if selectedMap then
-        
+
         return selectedMap
     end
 
-    
+
 
     RemoteFunction:InvokeServer(
         "Multiplayer",
@@ -1615,7 +1654,7 @@ local function StartMatchmaking(difficulty, mode)
     end)
 
     if not success then
-        warn("Failed to start matchmaking:", result)
+        ProtectedNoop("Failed to start matchmaking:", result)
         return false
     end
 
@@ -1659,7 +1698,7 @@ shared["TDS_Table"] = TDS
 function TDS:ResetIndex()
     self.PlacedTowers = {}
     self.placed_towers = self.PlacedTowers
-    
+
 end
 
 function TDS:Place(towerName, x, y, z, ...)
@@ -1694,7 +1733,7 @@ function TDS:Place(towerName, x, y, z, ...)
         )
 
         if not hit then
-            warn("[STACKER] No surface found:", towerName, x, y, z)
+            ProtectedNoop("[STACKER] No surface found:", towerName, x, y, z)
             return false
         end
 
@@ -1842,9 +1881,9 @@ local function DirectSelectMap(mapName)
         end)
 
         if ok then
-            
+
         else
-            warn("[VIP MAP] Override failed:", result)
+            ProtectedNoop("[VIP MAP] Override failed:", result)
         end
 
         task.wait(3)
@@ -1872,7 +1911,7 @@ local function DirectReady()
     local voteReplicator = GetDirectVoteReplicator()
 
     if not gameStateReplicator or not voteReplicator then
-        warn("[READY] Replicators missing")
+        ProtectedNoop("[READY] Replicators missing")
         return false
     end
 
@@ -1970,7 +2009,7 @@ local function DirectPlaceTower(towerName, position)
                 connection:Disconnect()
             end
 
-            warn("[PLACE] Error:", err)
+            ProtectedNoop("[PLACE] Error:", err)
             task.wait(0.05)
             continue
         end
@@ -2012,7 +2051,7 @@ local function DirectPlaceTower(towerName, position)
 
         if newTower then
             table.insert(TDS.PlacedTowers, newTower)
-            
+
             return true
         end
 
@@ -2026,7 +2065,7 @@ local function DirectUpgradeTower(index, path)
     local tower = TDS.PlacedTowers[index]
 
     if not tower or not tower.Parent then
-        warn("[UPGRADE] Missing tower index:", index)
+        ProtectedNoop("[UPGRADE] Missing tower index:", index)
         return false
     end
 
@@ -2647,7 +2686,7 @@ local function DirectSetTarget(index, targetType)
     local tower = TDS.PlacedTowers[index]
 
     if not tower or not tower.Parent then
-        warn("[TARGET] Missing tower index:", index)
+        ProtectedNoop("[TARGET] Missing tower index:", index)
         return false
     end
 
@@ -2706,8 +2745,8 @@ local function RunEasy()
         ),
 
         ["Simplicity"] = Vector3.new(
-            -9.6557102203369, 
-             0.99998462200165, 
+            -9.6557102203369,
+             0.99998462200165,
             -9.2791118621826
         ),
 
@@ -2739,7 +2778,7 @@ local function RunEasy()
             position
         )
     else
-        warn("No Easy strategy position for:", selectedMap)
+        ProtectedNoop("No Easy strategy position for:", selectedMap)
     end
 
     runningEasy = false
@@ -2811,7 +2850,7 @@ local function RunMolten()
             position
         )
     else
-        warn("No Molten strategy position for:", selectedMap)
+        ProtectedNoop("No Molten strategy position for:", selectedMap)
     end
 
     runningMolten = false
@@ -2836,7 +2875,7 @@ local function GetHardcoreLobbyBoardMaps()
 
             if title then
                 maps[i] = title.Text
-                
+
             end
         end
     end
@@ -2883,7 +2922,7 @@ local function RunHardcore()
         selectedMap = GetAnyTargetMap(targetMaps)
 
         if selectedMap then
-            
+
         end
     end
 
@@ -3269,7 +3308,7 @@ local function RunAutoMaxSkillPhasePass(phases, phaseLabel)
     statusDisplay.Text = "Status: Checking " .. tostring(phaseLabel) .. "..."
 
     if not WaitForAutoMaxSkillTree(15) then
-        warn("[AUTO MAX] Skill tree is unavailable; farming Lay By again")
+        ProtectedNoop("[AUTO MAX] Skill tree is unavailable; farming Lay By again")
         return "needs_farm"
     end
 
@@ -3288,7 +3327,7 @@ local function RunAutoMaxSkillPhasePass(phases, phaseLabel)
                 local current, max = GetAutoMaxSkillLevel(nodeId)
 
                 if current == nil or max == nil then
-                    warn("[AUTO MAX] Skill node unavailable; farming Lay By again")
+                    ProtectedNoop("[AUTO MAX] Skill node unavailable; farming Lay By again")
                     return "needs_farm"
                 end
 
@@ -3307,14 +3346,14 @@ local function RunAutoMaxSkillPhasePass(phases, phaseLabel)
                         .. " to "
                         .. tostring(result)
                 else
-                    warn(
+                    ProtectedNoop(
                         "[AUTO MAX] Cannot upgrade "
                         .. tostring(AUTO_MAX_SKILL_NAMES[nodeId])
                         .. " right now ("
                         .. tostring(result)
                         .. ")"
                     )
-                    warn("[AUTO MAX] First unavailable Skill Tree upgrade reached; farming Lay By again")
+                    ProtectedNoop("[AUTO MAX] First unavailable Skill Tree upgrade reached; farming Lay By again")
                     return "needs_farm"
                 end
             end
@@ -3426,7 +3465,7 @@ end
 
 local function RunAutoMaxTowerBuyerPass()
     if AreAllAutoMaxAvailableTowersOwned() then
-        warn("[AUTO MAX] All available towers are owned")
+        ProtectedNoop("[AUTO MAX] All available towers are owned")
         return "all_owned"
     end
 
@@ -3472,16 +3511,16 @@ local function RunAutoMaxTowerBuyerPass()
     end
 
     if AreAllAutoMaxAvailableTowersOwned() then
-        warn("[AUTO MAX] All available towers are now owned")
+        ProtectedNoop("[AUTO MAX] All available towers are now owned")
         return "all_owned"
     end
 
     if boughtAny then
-        warn("[AUTO MAX] Tower buyer bought what it could; farming Lay By again")
+        ProtectedNoop("[AUTO MAX] Tower buyer bought what it could; farming Lay By again")
         return "needs_farm"
     end
 
-    warn("[AUTO MAX] No tower can be bought right now; farming Lay By again")
+    ProtectedNoop("[AUTO MAX] No tower can be bought right now; farming Lay By again")
     return "needs_farm"
 end
 
@@ -4431,7 +4470,7 @@ local function LaunchFrostLayBy()
 
         if not ok then
             LayByLaunching = false
-            warn("[AUTO MAX] Frost Lay By failed:", err)
+            ProtectedNoop("[AUTO MAX] Frost Lay By failed:", err)
             statusDisplay.Text = "Status: Frost Lay By Failed"
         end
     end)
@@ -4892,7 +4931,7 @@ local function RouteProgressionByLevel(level, directMatchmaking)
                 task.wait(1)
 
                 if not IsTowerOwned("Soldier") then
-                    warn("[WIN] Soldier is still not owned after purchase attempt")
+                    ProtectedNoop("[WIN] Soldier is still not owned after purchase attempt")
                     return false
                 end
             end
@@ -5110,7 +5149,7 @@ local function RunAutoProgression()
 
         if not saved then
             statusDisplay.Text = "Status: Failed to load level"
-            warn("Failed to load lobby level after 10 attempts.")
+            ProtectedNoop("Failed to load lobby level after 10 attempts.")
             running = false
             return
         end
@@ -5223,6 +5262,7 @@ function AutoProgress.Start()
     Settings.AutoMaxProgression = false
     AutoProgression = true
     Settings.AutoProgression = true
+    Globals.AutoProgressProtectionActive = true
 
     if (tonumber(Settings.RunStartedAt) or 0) <= 0 then
         Settings.RunStartedAt = os.time()
@@ -5247,6 +5287,7 @@ function AutoProgress.StartAutoMax()
 
     AutoProgression = true
     Settings.AutoProgression = true
+    Globals.AutoProgressProtectionActive = true
 
     if (tonumber(Settings.RunStartedAt) or 0) <= 0 then
         Settings.RunStartedAt = os.time()
@@ -5270,6 +5311,7 @@ end
 function AutoProgress.Stop()
     AutoProgression = false
     Settings.AutoProgression = false
+    Globals.AutoProgressProtectionActive = false
     AutoMaxMode = false
     Settings.AutoMaxProgression = false
     Settings.AutoMaxLayByPending = false
@@ -5294,7 +5336,7 @@ end
 function AutoProgress.SetStrategy(strategy)
     AutoProgressStrategy = strategy == "Lose" and "Lose" or "Win"
     shared.AutoProgressStrategy = AutoProgressStrategy
-    
+
     return AutoProgressStrategy
 end
 
@@ -5444,7 +5486,7 @@ local function RestartMatchAndRerunStrategy()
         local launched = ReturnToPrivateLobby()
 
         if not launched then
-            warn("[PRIVATE SERVER] Private return failed, falling back to normal lobby")
+            ProtectedNoop("[PRIVATE SERVER] Private return failed, falling back to normal lobby")
             BackToLobby()
         end
 
@@ -5474,7 +5516,7 @@ local function RestartMatchAndRerunStrategy()
     end)
 
     if not restarted then
-        warn(IsWinStrategy() and "Failed to rematch:" or "Failed to restart match:", restartResult)
+        ProtectedNoop(IsWinStrategy() and "Failed to rematch:" or "Failed to restart match:", restartResult)
         statusDisplay.Text = "Status: Restart Failed"
         restartMatchLoopRunning = false
         return false
@@ -5512,7 +5554,7 @@ local function RestartMatchAndRerunStrategy()
         local ownedTowers = DirectGetOwnedTowers()
 
         if next(ownedTowers) == nil then
-            warn("[ANTI STUCK] No tower placed after restart, rejoining...")
+            ProtectedNoop("[ANTI STUCK] No tower placed after restart, rejoining...")
 
             pcall(function()
                 TeleportService:Teleport(
@@ -5531,7 +5573,7 @@ local function RestartMatchAndRerunStrategy()
     runningHardcore = false
 
     if not CurrentStrategyRunner then
-        warn("[AUTO RESTART] No saved strategy runner")
+        ProtectedNoop("[AUTO RESTART] No saved strategy runner")
         statusDisplay.Text = "Status: No Strategy To Re-run"
         restartMatchLoopRunning = false
         return false
@@ -5544,14 +5586,14 @@ local function RestartMatchAndRerunStrategy()
     restartMatchLoopRunning = false
 
     task.spawn(function()
-        
+
 
         local ok, result = pcall(CurrentStrategyRunner)
 
         if not ok then
-            warn("[AUTO RESTART] Strategy error:", result)
+            ProtectedNoop("[AUTO RESTART] Strategy error:", result)
         elseif result == false then
-            warn("[AUTO RESTART] Strategy returned false")
+            ProtectedNoop("[AUTO RESTART] Strategy returned false")
         end
     end)
 
@@ -5578,7 +5620,7 @@ task.spawn(function()
             elseif not rewardGameOverHandled then
                 rewardGameOverHandled = true
                 ResetMatchTimeout()
-                
+
 
                 local storyMission = GetStoryMissionName()
 
