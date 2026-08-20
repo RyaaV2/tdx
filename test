@@ -217,7 +217,8 @@ local Settings = {
     InGameLevel = nil,
     Chapter0Completed = false,
     GatlingUnlocked = false,
-    AutoMaxProgression = false
+    AutoMaxProgression = false,
+    AutoMaxLayByPending = false
 }
 
 local lobbyProgressLoaded = false
@@ -3448,6 +3449,73 @@ local function StartFrostFromLobby()
     end
 end
 
+local function GetIntermissionMaps()
+    local maps = {}
+    local intermissionLobby = workspace:FindFirstChild("IntermissionLobby")
+    local boards = intermissionLobby and intermissionLobby:FindFirstChild("Boards")
+
+    if not boards then
+        return maps
+    end
+
+    for i = 1, 4 do
+        local board = boards:FindFirstChild("Board" .. i)
+
+        if board then
+            local hitboxes = board:FindFirstChild("Hitboxes")
+            local bottom = hitboxes and hitboxes:FindFirstChild("Bottom")
+            local mapDisplay = bottom and bottom:FindFirstChild("MapDisplay")
+            local title = mapDisplay and mapDisplay:FindFirstChild("Title")
+
+            if title then
+                maps[i] = tostring(title.Text or "")
+            end
+        end
+    end
+
+    return maps
+end
+
+local function HasLayByMap()
+    for _, mapName in pairs(GetIntermissionMaps()) do
+        if mapName == "Lay By" then
+            return true
+        end
+    end
+
+    return false
+end
+
+local function WaitForLayBy(timeout)
+    local deadline = os.clock() + (timeout or 5)
+
+    repeat
+        if HasLayByMap() then
+            return true
+        end
+
+        task.wait(0.25)
+    until os.clock() >= deadline
+
+    return HasLayByMap()
+end
+
+local function RestartFrostMatchmaking()
+    local ok, result = pcall(function()
+        return RemoteFunc:InvokeServer(
+            "Multiplayer",
+            "v2:start",
+            {
+                difficulty = "Frost",
+                mode = "survival",
+                count = 1
+            }
+        )
+    end)
+
+    return ok and CheckResOk(result)
+end
+
 local function SetupLayBy()
     local intermission =
         PlayerGui:WaitForChild("ReactGameIntermission", 30)
@@ -3478,15 +3546,34 @@ local function SetupLayBy()
         bulkModifiers:InvokeServer(modifiers)
     end)
 
-    pcall(function()
-        RemoteFunc:InvokeServer(
-            "LobbyVoting",
-            "Override",
-            "Lay By"
-        )
-    end)
+    if not HasLayByMap() then
+        pcall(function()
+            RemoteFunc:InvokeServer(
+                "LobbyVoting",
+                "Override",
+                "Lay By"
+            )
+        end)
 
-    task.wait(3)
+        WaitForLayBy(3)
+    end
+
+    if not HasLayByMap() then
+        pcall(function()
+            RemoteEvent:FireServer(
+                "LobbyVoting",
+                "Veto"
+            )
+        end)
+
+        task.wait(2)
+        WaitForLayBy(2)
+    end
+
+    if not HasLayByMap() then
+        RestartFrostMatchmaking()
+        return false
+    end
 
     pcall(function()
         RemoteEvent:FireServer(
@@ -3729,7 +3816,10 @@ repeat
 until IsGame()
 
 EquipLoadout()
-SetupLayBy()
+
+if not SetupLayBy() then
+    return
+end
 
 StartAntiLag()
 StartAutoDjBooth()
@@ -3926,6 +4016,14 @@ end
 
 local function RouteAutoMaxLevel175(directMatchmaking)
     if game.PlaceId ~= LOBBY_PLACE_ID then
+        if Settings.AutoMaxLayByPending == true then
+            Settings.AutoMaxLayByPending = false
+            SaveSettings()
+
+            statusDisplay.Text = "Status: Resuming Frost Lay By..."
+            return LaunchFrostLayBy()
+        end
+
         statusDisplay.Text = "Status: Waiting for Lobby to Check Auto Max..."
         return false
     end
@@ -4069,6 +4167,8 @@ local function RouteAutoMaxLevel175(directMatchmaking)
     end
 
     targetDisplay.Text = "Target: Frost Lay By"
+    Settings.AutoMaxLayByPending = true
+    SaveSettings()
     return LaunchFrostLayBy()
 end
 
@@ -4493,6 +4593,7 @@ function AutoProgress.Stop()
     Settings.AutoProgression = false
     AutoMaxMode = false
     Settings.AutoMaxProgression = false
+    Settings.AutoMaxLayByPending = false
     Settings.RunStartedAt = 0
 
     ResetMatchTimeout()
