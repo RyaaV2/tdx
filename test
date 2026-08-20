@@ -1,3 +1,5 @@
+local Globals = getgenv()
+
 if not game:IsLoaded() then
     game.Loaded:Wait()
 end
@@ -25,6 +27,37 @@ end)
 local SETTINGS_FILE =
     "AutoProgress_" .. tostring(plr.Name) .. ".json"
 local LOBBY_PLACE_ID = 3260590327
+
+local function ReturnToPrivateLobby()
+    local privateCode = tostring(Globals.PrivateCode or "")
+
+    if privateCode == "" then
+        return false
+    end
+
+    local platform = UIS:GetPlatform()
+    local isMobile =
+        platform == Enum.Platform.IOS
+        or platform == Enum.Platform.Android
+
+    if isMobile then
+        return false
+    end
+
+    local ok, err = pcall(function()
+        game:GetService("ExperienceService"):LaunchExperience({
+            placeId = LOBBY_PLACE_ID,
+            linkCode = privateCode
+        })
+    end)
+
+    if not ok then
+        warn("[PRIVATE SERVER] Failed to return to private lobby:", err)
+        return false
+    end
+
+    return true
+end
 
 local COLORS = {
     Background = Color3.fromRGB(29, 28, 38),
@@ -3543,18 +3576,26 @@ local function RestartMatchAndRerunStrategy()
         end
     end
 
+    if IsWinStrategy()
+        and tostring(Globals.PrivateCode or "") ~= "" then
+
+        statusDisplay.Text = "Status: Returning to Private Lobby..."
+
+        local launched = ReturnToPrivateLobby()
+
+        if not launched then
+            warn("[PRIVATE SERVER] Private return failed, falling back to normal lobby")
+            BackToLobby()
+        end
+
+        restartMatchLoopRunning = false
+        return true
+    end
+
     statusDisplay.Text = IsWinStrategy() and "Status: Rematching..." or "Status: Restarting Match..."
 
     local restarted, restartResult = pcall(function()
         if IsWinStrategy() then
-            if Globals.PrivateCode
-                and Globals.PrivateCode ~= "" then
-
-                statusDisplay.Text = "Status: Returning to Private Lobby..."
-                BackToLobby()
-                return true
-            end
-
             local rematchEvent = ReplicatedStorage
                 :WaitForChild("Network")
                 :WaitForChild("GameManager")
