@@ -216,7 +216,8 @@ local Settings = {
     LastLobbyLevel = 0,
     InGameLevel = nil,
     Chapter0Completed = false,
-    GatlingUnlocked = false
+    GatlingUnlocked = false,
+    AutoMaxProgression = false
 }
 
 local lobbyProgressLoaded = false
@@ -588,6 +589,7 @@ local gameStateDisplay = {Text = "Location: Detecting..."}
 local runtimeDisplay = {Text = "Running Time: 00:00:00"}
 
 local AutoProgression = false
+local AutoMaxMode = Settings.AutoMaxProgression == true
 local AutoProgressStrategy = shared.AutoProgressStrategy == "Lose" and "Lose" or "Win"
 
 local function IsWinStrategy()
@@ -3061,8 +3063,1022 @@ local function GetBestProgressionLevel()
     return tonumber(Settings.SavedLevel) or 0
 end
 
+
+local LAYBY_REQUIRED_TOWERS = {
+    "Gatling Gun",
+    "Hacker",
+    "Trapper",
+    "DJ Booth",
+    "Mercenary Base"
+}
+
+local HACKER_GEM_PRICE = 5500
+local TRAPPER_COIN_PRICE = 3000
+local DJ_COIN_PRICE = 5000
+
+local FROST_LAYBY_SOURCE = [==[
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local MarketplaceService = game:GetService("MarketplaceService")
+
+local Player = Players.LocalPlayer or Players.PlayerAdded:Wait()
+local PlayerGui = Player:WaitForChild("PlayerGui")
+local RemoteFunc = ReplicatedStorage:WaitForChild("RemoteFunction")
+local RemoteEvent = ReplicatedStorage:WaitForChild("RemoteEvent")
+
+local Towers = {}
+local AntiLagRunning = false
+local AutoDjRunning = false
+local AutoMercenaryRunning = false
+
+local function CheckResOk(data)
+    if data == true then
+        return true
+    end
+
+    if type(data) == "table" and data.Success == true then
+        return true
+    end
+
+    local ok, isModel = pcall(function()
+        return data and data:IsA("Model")
+    end)
+
+    if ok and isModel then
+        return true
+    end
+
+    if type(data) == "userdata" then
+        return true
+    end
+
+    return false
+end
+
+local function GetCurrentWave()
+    local label
+
+    repeat
+        task.wait(0.5)
+
+        local gui = PlayerGui:FindFirstChild("ReactGameTopGameDisplay")
+
+        label =
+            gui
+            and gui:FindFirstChild("Frame")
+            and gui.Frame:FindFirstChild("wave")
+            and gui.Frame.wave:FindFirstChild("container")
+            and gui.Frame.wave.container:FindFirstChild("value")
+    until label
+
+    return tonumber(label.Text:match("(%d+)")) or 0
+end
+
+local function IsOwnedTower(tower)
+    local owner = tower:FindFirstChild("Owner")
+
+    if owner and owner.Value == Player.UserId then
+        return true
+    end
+
+    local rep = tower:FindFirstChild("TowerReplicator")
+
+    return rep
+        and rep:GetAttribute("OwnerId") == Player.UserId
+end
+
+local function PlaceTower(name, position)
+    local folder = workspace:WaitForChild("Towers")
+    local existing = {}
+
+    for _, tower in ipairs(folder:GetChildren()) do
+        if IsOwnedTower(tower) then
+            existing[tower] = true
+        end
+    end
+
+    while true do
+        local ok, result = pcall(function()
+            return RemoteFunc:InvokeServer(
+                "Troops",
+                "Place",
+                {
+                    Rotation = CFrame.new(),
+                    Position = position
+                },
+                name
+            )
+        end)
+
+        if ok and CheckResOk(result) then
+            break
+        end
+
+        task.wait(0.25)
+    end
+
+    local newTower
+
+    repeat
+        for _, tower in ipairs(folder:GetChildren()) do
+            if not existing[tower] and IsOwnedTower(tower) then
+                newTower = tower
+                break
+            end
+        end
+
+        task.wait(0.05)
+    until newTower
+
+    Towers[#Towers + 1] = newTower
+    return #Towers
+end
+
+local function Upgrade(index, path)
+    local tower = Towers[index]
+
+    if not tower then
+        return false
+    end
+
+    while true do
+        local ok, result = pcall(function()
+            return RemoteFunc:InvokeServer(
+                "Troops",
+                "Upgrade",
+                "Set",
+                {
+                    Troop = tower,
+                    Path = path or 1
+                }
+            )
+        end)
+
+        if ok and CheckResOk(result) then
+            return true
+        end
+
+        task.wait(0.25)
+    end
+end
+
+local function SetTarget(index, target)
+    local tower = Towers[index]
+
+    if not tower then
+        return false
+    end
+
+    pcall(function()
+        RemoteFunc:InvokeServer(
+            "Troops",
+            "Target",
+            "Set",
+            {
+                Troop = tower,
+                Target = target
+            }
+        )
+    end)
+
+    return true
+end
+
+local function SetOption(index, name, value)
+    local tower = Towers[index]
+
+    if not tower then
+        return false
+    end
+
+    while true do
+        local ok, result = pcall(function()
+            return RemoteFunc:InvokeServer(
+                "Troops",
+                "Option",
+                "Set",
+                {
+                    Troop = tower,
+                    Name = name,
+                    Value = value
+                }
+            )
+        end)
+
+        if ok and CheckResOk(result) then
+            return true
+        end
+
+        task.wait(0.25)
+    end
+end
+
+local function UpgradeTimes(index, count, path)
+    for _ = 1, count do
+        Upgrade(index, path)
+    end
+end
+
+local function PlaceSequence(sequence)
+    for _, entry in ipairs(sequence) do
+        PlaceTower(entry[1], entry[2])
+    end
+end
+
+local function Ready()
+    local stateReplicators =
+        ReplicatedStorage:WaitForChild("StateReplicators")
+
+    local voteReplicator =
+        stateReplicators:WaitForChild("VoteReplicator")
+
+    local gameStateReplicator =
+        stateReplicators:WaitForChild("GameStateReplicator")
+
+    while gameStateReplicator:GetAttribute("GameStarted") ~= true do
+        if voteReplicator:GetAttribute("Enabled") == true
+            and voteReplicator:GetAttribute("Title") == "Ready?" then
+
+            pcall(function()
+                RemoteFunc:InvokeServer("Voting", "Skip")
+            end)
+
+            return true
+        end
+
+        task.wait(0.1)
+    end
+
+    return true
+end
+
+local function StartVoteSkip(startWave, endWave)
+    task.spawn(function()
+        for wave = startWave, endWave do
+            while GetCurrentWave() < wave do
+                task.wait(1)
+            end
+
+            local nextWave = wave + 1
+
+            while GetCurrentWave() < nextWave do
+                local voteUi =
+                    PlayerGui:FindFirstChild("ReactOverridesVote")
+
+                local voteButton =
+                    voteUi
+                    and voteUi:FindFirstChild("Frame")
+                    and voteUi.Frame:FindFirstChild("votes")
+                    and voteUi.Frame.votes:FindFirstChild("vote", true)
+
+                if voteButton
+                    and voteButton.Position == UDim2.new(0.5, 0, 0.5, 0) then
+
+                    pcall(function()
+                        RemoteFunc:InvokeServer("Voting", "Skip")
+                    end)
+                end
+
+                task.wait(0.5)
+            end
+        end
+    end)
+end
+
+local function WaitForWave(wave)
+    while GetCurrentWave() < wave do
+        task.wait(0.5)
+    end
+end
+
+local function EquipLoadout()
+    local desired = {
+        "Trapper",
+        "Hacker",
+        "Gatling Gun",
+        "Mercenary Base",
+        "DJ Booth"
+    }
+
+    local currentlyEquipped = {}
+    local stateReplicators =
+        ReplicatedStorage:FindFirstChild("StateReplicators")
+
+    if stateReplicators then
+        for _, folder in ipairs(stateReplicators:GetChildren()) do
+            if folder.Name == "PlayerReplicator"
+                and folder:GetAttribute("UserId") == Player.UserId then
+
+                local raw = folder:GetAttribute("EquippedTowers")
+
+                if type(raw) == "string" then
+                    local cleaned = raw:match("%[.*%]")
+
+                    if cleaned then
+                        local ok, decoded = pcall(function()
+                            return HttpService:JSONDecode(cleaned)
+                        end)
+
+                        if ok and type(decoded) == "table" then
+                            currentlyEquipped = decoded
+                        end
+                    end
+                end
+            end
+        end
+    end
+
+    for _, towerName in ipairs(currentlyEquipped) do
+        if towerName ~= "None" then
+            pcall(function()
+                RemoteEvent:FireServer(
+                    "Inventory",
+                    "Unequip",
+                    "Tower",
+                    towerName
+                )
+            end)
+
+            task.wait(0.3)
+        end
+    end
+
+    task.wait(0.5)
+
+    for _, towerName in ipairs(desired) do
+        pcall(function()
+            RemoteEvent:FireServer(
+                "Inventory",
+                "Equip",
+                "Tower",
+                towerName
+            )
+        end)
+
+        task.wait(0.3)
+    end
+
+    task.wait(0.5)
+end
+
+local function StartFrostFromLobby()
+    while true do
+        local ok, result = pcall(function()
+            return RemoteFunc:InvokeServer(
+                "Multiplayer",
+                "v2:start",
+                {
+                    difficulty = "Frost",
+                    mode = "survival",
+                    count = 1
+                }
+            )
+        end)
+
+        if ok and CheckResOk(result) then
+            return true
+        end
+
+        task.wait(0.5)
+    end
+end
+
+local function SetupLayBy()
+    local intermission =
+        PlayerGui:WaitForChild("ReactGameIntermission", 30)
+
+    if not intermission then
+        return false
+    end
+
+    intermission:WaitForChild("Frame", 10)
+
+    local modifiers = {
+        HiddenEnemies = true,
+        Glass = true,
+        ExplodingEnemies = true,
+        Limitation = true,
+        Committed = true,
+        Quarantine = true,
+        Fog = true
+    }
+
+    local bulkModifiers =
+        ReplicatedStorage
+            :WaitForChild("Network")
+            :WaitForChild("Modifiers")
+            :WaitForChild("RF:BulkVoteModifiers")
+
+    pcall(function()
+        bulkModifiers:InvokeServer(modifiers)
+    end)
+
+    pcall(function()
+        RemoteFunc:InvokeServer(
+            "LobbyVoting",
+            "Override",
+            "Lay By"
+        )
+    end)
+
+    task.wait(3)
+
+    pcall(function()
+        RemoteEvent:FireServer(
+            "LobbyVoting",
+            "Vote",
+            "Lay By",
+            Vector3.new(12.59, 10.64, 52.01)
+        )
+    end)
+
+    task.wait(1)
+
+    pcall(function()
+        RemoteEvent:FireServer(
+            "LobbyVoting",
+            "Ready"
+        )
+    end)
+
+    repeat
+        task.wait(0.5)
+    until PlayerGui:FindFirstChild("ReactUniversalHotbar")
+
+    return true
+end
+
+local function StartAntiLag()
+    if AntiLagRunning then
+        return
+    end
+
+    AntiLagRunning = true
+
+    pcall(function()
+        settings().Rendering.QualityLevel =
+            Enum.QualityLevel.Level01
+    end)
+
+    task.spawn(function()
+        while true do
+            local towersFolder =
+                workspace:FindFirstChild("Towers")
+
+            local clientUnits =
+                workspace:FindFirstChild("ClientUnits")
+
+            if towersFolder then
+                for _, tower in ipairs(
+                    towersFolder:GetChildren()
+                ) do
+                    local animations =
+                        tower:FindFirstChild("Animations")
+
+                    local weapon =
+                        tower:FindFirstChild("Weapon")
+
+                    local projectiles =
+                        tower:FindFirstChild("Projectiles")
+
+                    if animations then
+                        animations:Destroy()
+                    end
+
+                    if projectiles then
+                        projectiles:Destroy()
+                    end
+
+                    if weapon then
+                        weapon:Destroy()
+                    end
+                end
+            end
+
+            if clientUnits then
+                for _, unit in ipairs(
+                    clientUnits:GetChildren()
+                ) do
+                    unit:Destroy()
+                end
+            end
+
+            task.wait(0.5)
+        end
+    end)
+end
+
+local function StartAutoDjBooth()
+    if AutoDjRunning then
+        return
+    end
+
+    AutoDjRunning = true
+
+    task.spawn(function()
+        while true do
+            local towersFolder =
+                workspace:FindFirstChild("Towers")
+
+            local dj
+
+            if towersFolder then
+                for _, rep in ipairs(
+                    towersFolder:GetDescendants()
+                ) do
+                    if rep:IsA("Folder")
+                        and rep.Name == "TowerReplicator"
+                        and rep:GetAttribute("Name") == "DJ Booth"
+                        and rep:GetAttribute("OwnerId") == Player.UserId
+                        and (rep:GetAttribute("Upgrade") or 0) >= 3 then
+
+                        dj = rep.Parent
+                        break
+                    end
+                end
+            end
+
+            if dj then
+                pcall(function()
+                    RemoteFunc:InvokeServer(
+                        "Troops",
+                        "Abilities",
+                        "Activate",
+                        {
+                            Troop = dj,
+                            Name = "Drop The Beat",
+                            Data = {}
+                        }
+                    )
+                end)
+            end
+
+            task.wait(1)
+        end
+    end)
+end
+
+local function StartAutoMercenary()
+    if AutoMercenaryRunning then
+        return
+    end
+
+    AutoMercenaryRunning = true
+
+    task.spawn(function()
+        while true do
+            local towersFolder =
+                workspace:FindFirstChild("Towers")
+
+            if towersFolder then
+                for _, rep in ipairs(
+                    towersFolder:GetDescendants()
+                ) do
+                    if rep:IsA("Folder")
+                        and rep.Name == "TowerReplicator"
+                        and rep:GetAttribute("Name") == "Mercenary Base"
+                        and rep:GetAttribute("OwnerId") == Player.UserId
+                        and (rep:GetAttribute("Upgrade") or 0) >= 5 then
+
+                        pcall(function()
+                            RemoteFunc:InvokeServer(
+                                "Troops",
+                                "Abilities",
+                                "Activate",
+                                {
+                                    Troop = rep.Parent,
+                                    Name = "Air-Drop",
+                                    Data = {
+                                        pathName = 1,
+                                        directionCFrame = CFrame.new(),
+                                        dist = 140
+                                    }
+                                }
+                            )
+                        end)
+
+                        task.wait(0.5)
+                    end
+                end
+            end
+
+            task.wait(0.5)
+        end
+    end)
+end
+
+local function StartLoopAbility(index, abilityName, data)
+    task.spawn(function()
+        while true do
+            local tower = Towers[index]
+
+            if tower then
+                local payload = table.clone(data)
+
+                if type(payload.towerToClone) == "number" then
+                    payload.towerToClone =
+                        Towers[payload.towerToClone]
+                end
+
+                local ok, result = pcall(function()
+                    return RemoteFunc:InvokeServer(
+                        "Troops",
+                        "Abilities",
+                        "Activate",
+                        {
+                            Troop = tower,
+                            Name = abilityName,
+                            Data = payload
+                        }
+                    )
+                end)
+
+                if ok and CheckResOk(result) then
+                    task.wait(1)
+                else
+                    task.wait(0.25)
+                end
+            else
+                task.wait(0.5)
+            end
+        end
+    end)
+end
+
+local function IsLobby()
+    return PlayerGui:FindFirstChild("ReactLobbyHud") ~= nil
+end
+
+local function IsGame()
+    return PlayerGui:FindFirstChild("ReactUniversalHotbar") ~= nil
+        or PlayerGui:FindFirstChild("ReactGameIntermission") ~= nil
+end
+
+if IsLobby() and not IsGame() then
+    StartFrostFromLobby()
+    return
+end
+
+repeat
+    task.wait(0.5)
+until IsGame()
+
+EquipLoadout()
+SetupLayBy()
+
+StartAntiLag()
+StartAutoDjBooth()
+StartAutoMercenary()
+StartVoteSkip(11, 39)
+
+loadstring(game:HttpGet("https://raw.githubusercontent.com/avtryxz/autogutlin/refs/heads/main/autogutlin.lua"))()
+
+PlaceTower("Trapper", Vector3.new(-2.537647247314453, 242.99996948242188, 235.9556427001953))
+Ready()
+
+PlaceSequence({
+    {"Trapper", Vector3.new(-2.5322399139404297, 242.99998474121094, 266.0189514160156)},
+    {"Trapper", Vector3.new(-2.5257043838500977, 242.99998474121094, 269.0687561035156)},
+    {"Trapper", Vector3.new(-3.6999168395996094, 242.99996948242188, 233.13992309570312)},
+    {"Trapper", Vector3.new(-2.5300559997558594, 242.99998474121094, 230.3687286376953)}
+})
+
+UpgradeTimes(5, 2)
+SetOption(5, "Trap", "Landmine")
+SetTarget(5, "Last")
+SetTarget(5, "Strongest")
+
+Upgrade(4)
+Upgrade(1)
+
+PlaceTower("Trapper", Vector3.new(2.550579071044922, 242.99998474121094, 232.9116973876953))
+
+Upgrade(1)
+SetOption(1, "Trap", "Landmine")
+
+Upgrade(4)
+SetOption(4, "Trap", "Landmine")
+
+PlaceTower("Gatling Gun", Vector3.new(0.0039330520667135715, 243, 149.94903564453125))
+
+UpgradeTimes(7, 2)
+
+UpgradeTimes(6, 2)
+SetOption(6, "Trap", "Landmine")
+
+UpgradeTimes(2, 2)
+SetOption(2, "Trap", "Landmine")
+
+UpgradeTimes(3, 2)
+SetOption(3, "Trap", "Landmine")
+
+PlaceTower("Trapper", Vector3.new(2.5773868560791016, 242.99998474121094, 269.0355529785156))
+
+UpgradeTimes(8, 2)
+SetOption(8, "Trap", "Landmine")
+
+PlaceSequence({
+    {"Hacker", Vector3.new(2.607633590698242, 242.99998474121094, 266.0155334472656)},
+    {"Hacker", Vector3.new(2.569793701171875, 242.99996948242188, 235.95809936523438)}
+})
+
+UpgradeTimes(9, 2)
+UpgradeTimes(10, 2)
+
+PlaceTower("DJ Booth", Vector3.new(7.341665267944336, 243, 153.6221923828125))
+
+UpgradeTimes(11, 3)
+SetOption(11, "Track", "Green")
+
+PlaceTower("Mercenary Base", Vector3.new(4.264554977416992, 243, 149.21681213378906))
+UpgradeTimes(12, 4)
+
+for slot = 1, 3 do
+    SetOption(12, "Unit " .. slot, "Riot Guard")
+end
+
+PlaceTower("Mercenary Base", Vector3.new(-2.580049753189087, 243, 154.97145080566406))
+UpgradeTimes(13, 4)
+
+for _, slot in ipairs({2, 3, 1}) do
+    SetOption(13, "Unit " .. slot, "Riot Guard")
+end
+
+PlaceTower("Mercenary Base", Vector3.new(2.6931304931640625, 243, 154.95872497558594))
+UpgradeTimes(14, 4)
+
+for slot = 1, 3 do
+    SetOption(14, "Unit " .. slot, "Riot Guard")
+end
+
+for _, index in ipairs({12, 13, 14}) do
+    Upgrade(index)
+end
+
+UpgradeTimes(11, 2)
+UpgradeTimes(7, 2)
+
+for _, index in ipairs({12, 13, 14}) do
+    Upgrade(index)
+end
+
+WaitForWave(33)
+
+UpgradeTimes(7, 2)
+
+UpgradeTimes(9, 2)
+Upgrade(9, 2)
+
+UpgradeTimes(10, 2)
+Upgrade(10, 2)
+
+for _, index in ipairs({6, 5}) do
+    UpgradeTimes(index, 2)
+    SetOption(index, "Trap", "Bear Traps")
+end
+
+for _, index in ipairs({1, 4, 2, 3, 8}) do
+    UpgradeTimes(index, 2)
+end
+
+SetOption(11, "Track", "Red")
+
+StartLoopAbility(
+    9,
+    "Hologram Tower",
+    {
+        towerPosition = Vector3.new(0.1069461852312088, 243, 145.86935424804688),
+        towerToClone = 7
+    }
+)
+
+StartLoopAbility(
+    10,
+    "Hologram Tower",
+    {
+        towerPosition = Vector3.new(-2.588909864425659, 243, 159.48695373535156),
+        towerToClone = 12
+    }
+)
+
+StartLoopAbility(
+    9,
+    "Hologram Tower",
+    {
+        towerPosition = Vector3.new(2.60925030708313, 243, 159.5057373046875),
+        towerToClone = 12
+    }
+)
+
+StartLoopAbility(
+    10,
+    "Hologram Tower",
+    {
+        towerPosition = Vector3.new(2.60925030708313, 243, 164.80357055664062),
+        towerToClone = 12
+    }
+)
+
+]==]
+
+local LayByLaunching = false
+
+local function GetAutoMaxResource(name)
+    return tonumber(GetStat(name)) or 0
+end
+
+local function AllLayByTowersOwned()
+    for _, towerName in ipairs(LAYBY_REQUIRED_TOWERS) do
+        if not IsTowerOwned(towerName) then
+            return false, towerName
+        end
+    end
+    return true, nil
+end
+
+local function LaunchFrostLayBy()
+    if LayByLaunching then
+        return true
+    end
+
+    LayByLaunching = true
+    statusDisplay.Text = "Status: Starting Frost Lay By..."
+
+    task.spawn(function()
+        local ok, err = pcall(function()
+            return loadstring(FROST_LAYBY_SOURCE)()
+        end)
+
+        if not ok then
+            LayByLaunching = false
+            warn("[AUTO MAX] Frost Lay By failed:", err)
+            statusDisplay.Text = "Status: Frost Lay By Failed"
+        end
+    end)
+
+    return true
+end
+
+local function RouteAutoMaxLevel175(directMatchmaking)
+    if game.PlaceId ~= LOBBY_PLACE_ID then
+        statusDisplay.Text = "Status: Returning to Lobby to Check Auto Max..."
+        BackToLobby()
+        return true
+    end
+
+    if not IsTowerOwned(GATLING_TOWER) then
+        local coins = GetAutoMaxResource("Coins")
+        CurrentTrackedCoins = coins
+        targetDisplay.Text = "Target: Gatling Gun"
+
+        if coins >= GATLING_PRICE then
+            statusDisplay.Text = "Status: Buying Gatling Gun..."
+            BuyTowerIfNeeded(GATLING_TOWER)
+            task.wait(1)
+
+            if IsTowerOwned(GATLING_TOWER) then
+                Settings.GatlingUnlocked = true
+                SaveSettings()
+            end
+        end
+
+        if not IsTowerOwned(GATLING_TOWER) then
+            statusDisplay.Text = string.format(
+                "Status: Grinding Molten for Gatling (%d / %d Coins)",
+                coins,
+                GATLING_PRICE
+            )
+
+            if directMatchmaking then
+                return StartMatchmaking("Molten", "survival")
+            end
+
+            RunMolten()
+            return true
+        end
+    end
+
+    Settings.GatlingUnlocked = true
+    SaveSettings()
+
+    if not IsTowerOwned("Hacker") then
+        local gems = GetAutoMaxResource("Gems")
+        targetDisplay.Text = "Target: Hacker"
+
+        if gems >= HACKER_GEM_PRICE then
+            statusDisplay.Text = "Status: Buying Hacker..."
+            BuyTowerIfNeeded("Hacker")
+            task.wait(1)
+        end
+
+        if not IsTowerOwned("Hacker") then
+            statusDisplay.Text = string.format(
+                "Status: Grinding Hardcore for Hacker (%d / %d Gems)",
+                gems,
+                HACKER_GEM_PRICE
+            )
+
+            if directMatchmaking then
+                return StartMatchmaking("Easy", "hardcore")
+            end
+
+            RunHardcore()
+            return true
+        end
+    end
+
+    if not IsTowerOwned("Trapper") then
+        local coins = GetAutoMaxResource("Coins")
+        targetDisplay.Text = "Target: Trapper"
+
+        if coins >= TRAPPER_COIN_PRICE then
+            statusDisplay.Text = "Status: Buying Trapper..."
+            BuyTowerIfNeeded("Trapper")
+            task.wait(1)
+        end
+
+        if not IsTowerOwned("Trapper") then
+            statusDisplay.Text = string.format(
+                "Status: Grinding Molten for Trapper (%d / %d Coins)",
+                coins,
+                TRAPPER_COIN_PRICE
+            )
+
+            if directMatchmaking then
+                return StartMatchmaking("Molten", "survival")
+            end
+
+            RunMolten()
+            return true
+        end
+    end
+
+    if not IsTowerOwned("DJ Booth") then
+        local coins = GetAutoMaxResource("Coins")
+        targetDisplay.Text = "Target: DJ Booth"
+
+        if coins >= DJ_COIN_PRICE then
+            statusDisplay.Text = "Status: Buying DJ Booth..."
+            BuyTowerIfNeeded("DJ Booth")
+            task.wait(1)
+        end
+
+        if not IsTowerOwned("DJ Booth") then
+            statusDisplay.Text = string.format(
+                "Status: Grinding Molten for DJ Booth (%d / %d Coins)",
+                coins,
+                DJ_COIN_PRICE
+            )
+
+            if directMatchmaking then
+                return StartMatchmaking("Molten", "survival")
+            end
+
+            RunMolten()
+            return true
+        end
+    end
+
+    if not IsTowerOwned("Mercenary Base") then
+        targetDisplay.Text = "Target: Mercenary Base"
+        statusDisplay.Text = "Status: Buying Mercenary Base..."
+        BuyTowerIfNeeded("Mercenary Base")
+        task.wait(1)
+
+        if not IsTowerOwned("Mercenary Base") then
+            statusDisplay.Text = "Status: Grinding Molten for Mercenary Base"
+
+            if directMatchmaking then
+                return StartMatchmaking("Molten", "survival")
+            end
+
+            RunMolten()
+            return true
+        end
+    end
+
+    local allOwned, missingTower = AllLayByTowersOwned()
+
+    if not allOwned then
+        statusDisplay.Text = "Status: Missing " .. tostring(missingTower)
+        return false
+    end
+
+    targetDisplay.Text = "Target: Frost Lay By"
+    return LaunchFrostLayBy()
+end
+
 local function RouteProgressionByLevel(level, directMatchmaking)
     level = tonumber(level) or 0
+
+    if AutoMaxMode and level >= 175 then
+        return RouteAutoMaxLevel175(directMatchmaking)
+    end
 
     if IsWinStrategy() then
         if level >= 175 and game.PlaceId == LOBBY_PLACE_ID then
@@ -3390,6 +4406,10 @@ local function RunAutoProgression()
         local expectedDifficulty = IsWinStrategy() and "Easy" or GetProgressModeName(level)
         local currentDifficulty = GetCurrentDifficulty()
 
+        if AutoMaxMode and level >= 175 then
+            expectedDifficulty = currentDifficulty
+        end
+
         if expectedDifficulty ~= "Completed" then
             if not currentDifficulty then
                 statusDisplay.Text = "Status: Detecting Difficulty..."
@@ -3421,6 +4441,8 @@ function AutoProgress.Start()
         return true
     end
 
+    AutoMaxMode = false
+    Settings.AutoMaxProgression = false
     AutoProgression = true
     Settings.AutoProgression = true
 
@@ -3435,9 +4457,43 @@ function AutoProgress.Start()
     return true
 end
 
+function AutoProgress.StartAutoMax()
+    if AutoProgression and AutoMaxMode then
+        return true
+    end
+
+    AutoMaxMode = true
+    Settings.AutoMaxProgression = true
+    AutoProgressStrategy = "Lose"
+    shared.AutoProgressStrategy = "Lose"
+
+    AutoProgression = true
+    Settings.AutoProgression = true
+
+    if (tonumber(Settings.RunStartedAt) or 0) <= 0 then
+        Settings.RunStartedAt = os.time()
+    end
+
+    SaveSettings()
+    UpdateToggleAppearance()
+
+    task.spawn(RunAutoProgression)
+    return true
+end
+
+function AutoProgress.StopAutoMax()
+    return AutoProgress.Stop()
+end
+
+function AutoProgress.IsAutoMax()
+    return AutoMaxMode == true
+end
+
 function AutoProgress.Stop()
     AutoProgression = false
     Settings.AutoProgression = false
+    AutoMaxMode = false
+    Settings.AutoMaxProgression = false
     Settings.RunStartedAt = 0
 
     ResetMatchTimeout()
@@ -3489,6 +4545,10 @@ function AutoProgress.GetLevel()
 end
 
 function AutoProgress.GetStatus()
+    if AutoMaxMode then
+        return tostring(statusDisplay.Text or "Status: Auto Max")
+    end
+
     if Settings.GatlingUnlocked == true then
         return "Gatling Unlocked"
     end
@@ -3751,7 +4811,13 @@ task.spawn(function()
                             currentTarget = GetTargetLevel(oldLevel)
                         end
 
-                        if rewardLevel >= 175 then
+                        if rewardLevel >= 175 and AutoMaxMode then
+                            task.spawn(function()
+                                task.wait(0.5)
+                                statusDisplay.Text = "Status: Returning to Lobby to Check Auto Max..."
+                                BackToLobby()
+                            end)
+                        elseif rewardLevel >= 175 then
                             local trackedCoins = GetTrackedCoins()
 
                             if trackedCoins >= GATLING_PRICE then
@@ -3883,7 +4949,7 @@ task.spawn(function()
                 local progressMode =
                     IsWinStrategy() and "Easy" or GetProgressModeName(displayLevel)
 
-                if progressMode == "Completed" then
+                if progressMode == "Completed" and not AutoMaxMode then
                     statusDisplay.Text = "Status: Completed"
                 elseif not statusDisplay.Text:find("Matchmaking", 1, true)
                     and not statusDisplay.Text:find("Loading", 1, true)
