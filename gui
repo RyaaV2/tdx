@@ -16,7 +16,7 @@ local IsMobile = platform == Enum.Platform.IOS or platform == Enum.Platform.Andr
 
 local CONFIG_FILE = "AutoProgress_" .. tostring(LocalPlayer.Name) .. ".json"
 local LOBBY_PLACE_ID = 3260590327
-local AUTO_FARM_URL = "https://raw.githubusercontent.com/itsryaaa/tdx/refs/heads/main/test"
+local AUTO_FARM_URL = "https://api.jnkie.com/api/v1/luascripts/public/b6f94e11cee9f4f5d02f2d41490f2370afdbed8b345834b3b383decb2c386acc/download"
 
 local STATS_URL = "https://raw.githubusercontent.com/Ceepizz/rya/refs/heads/main/AutoProgressStats.lua"
 local WEBHOOK_URL = "https://raw.githubusercontent.com/Ceepizz/WEBHOOKSOURCE/refs/heads/main/doakes"
@@ -791,6 +791,28 @@ local Automation = Window:Tab({Title = "Automation", Icon = "bot"}) do
             SetSetting("AutoProgressEnabled", value)
 
             if value then
+                if game.PlaceId == LOBBY_PLACE_ID
+                    and not IsMobile
+                    and Globals.PrivateCode
+                    and Globals.PrivateCode ~= ""
+                    and (game.PrivateServerId == nil or game.PrivateServerId == "") then
+
+                    SetAutoProgressStatus("Private Server Code Found - Teleporting...")
+
+                    local ok, err = pcall(function()
+                        game:GetService("ExperienceService"):LaunchExperience({
+                            placeId = LOBBY_PLACE_ID,
+                            linkCode = Globals.PrivateCode
+                        })
+                    end)
+
+                    if not ok then
+                        warn("[PRIVATE SERVER] Failed to teleport:", err)
+                    end
+
+                    return
+                end
+
                 SetAutoProgressStatus("Auto Progress Turned On - Starting...")
 
                 local webhook = LoadProgressWebhook()
