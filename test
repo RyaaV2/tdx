@@ -218,7 +218,8 @@ local Settings = {
     Chapter0Completed = false,
     GatlingUnlocked = false,
     AutoMaxProgression = false,
-    AutoMaxLayByPending = false
+    AutoMaxLayByPending = false,
+    AutoMaxCoinFarmTower = ""
 }
 
 local lobbyProgressLoaded = false
@@ -3077,6 +3078,12 @@ local HACKER_GEM_PRICE = 5500
 local TRAPPER_COIN_PRICE = 3000
 local DJ_COIN_PRICE = 5000
 
+local AUTO_MAX_FALLBACK_TOWER_PRICES = {
+    Soldier = 400,
+    Pyromancer = 1250,
+    Hunter = 1000
+}
+
 local FROST_LAYBY_SOURCE = [==[
 if not game:IsLoaded() then
     game.Loaded:Wait()
@@ -4014,6 +4021,195 @@ local function LaunchFrostLayBy()
     return true
 end
 
+local function GetAutoMaxFallbackTowerPrice(towerName)
+    return AUTO_MAX_FALLBACK_TOWER_PRICES[towerName]
+end
+
+local function SetAutoMaxCoinFarmTower(towerName)
+    Settings.AutoMaxCoinFarmTower = tostring(towerName or "")
+    SaveSettings()
+end
+
+local function GetAutoMaxCoinFarmTower()
+    local towerName = tostring(Settings.AutoMaxCoinFarmTower or "")
+    return towerName ~= "" and towerName or nil
+end
+
+local function GetAutoMaxCoinFarmMode(towerName)
+    if towerName == "Soldier" then
+        return "Easy"
+    end
+
+    return "Molten"
+end
+
+local function TryBuyAutoMaxCoinTower(towerName)
+    if IsTowerOwned(towerName) then
+        if GetAutoMaxCoinFarmTower() == towerName then
+            SetAutoMaxCoinFarmTower(nil)
+        end
+        return true
+    end
+
+    local price = GetAutoMaxFallbackTowerPrice(towerName)
+    local coins = tonumber(GetStat("Coins")) or 0
+
+    if price and coins < price then
+        SetAutoMaxCoinFarmTower(towerName)
+        return false, coins, price
+    end
+
+    BuyTowerIfNeeded(towerName)
+    task.wait(1)
+
+    if IsTowerOwned(towerName) then
+        if GetAutoMaxCoinFarmTower() == towerName then
+            SetAutoMaxCoinFarmTower(nil)
+        end
+        return true
+    end
+
+    SetAutoMaxCoinFarmTower(towerName)
+    return false, tonumber(GetStat("Coins")) or coins, price
+end
+
+local function RouteAutoMaxBelow175(level, directMatchmaking)
+    level = tonumber(level) or 0
+
+    if game.PlaceId ~= LOBBY_PLACE_ID then
+        local targetTower = GetAutoMaxCoinFarmTower()
+
+        if targetTower then
+            local mode = GetAutoMaxCoinFarmMode(targetTower)
+
+            if mode == "Easy" then
+                if directMatchmaking then
+                    return StartMatchmaking("Easy", "survival")
+                end
+
+                RunEasy()
+                return true
+            end
+
+            if directMatchmaking then
+                return StartMatchmaking("Molten", "survival")
+            end
+
+            RunMolten()
+            return true
+        end
+
+        if level >= 50 then
+            if directMatchmaking then
+                return StartMatchmaking("Easy", "hardcore")
+            end
+
+            RunHardcore()
+            return true
+        elseif level >= 15 then
+            if directMatchmaking then
+                return StartMatchmaking("Molten", "survival")
+            end
+
+            RunMolten()
+            return true
+        end
+
+        if directMatchmaking then
+            return StartMatchmaking("Easy", "survival")
+        end
+
+        RunEasy()
+        return true
+    end
+
+    if level >= 15 and not IsTowerOwned("Soldier") then
+        local owned, coins, price = TryBuyAutoMaxCoinTower("Soldier")
+
+        if not owned then
+            statusDisplay.Text = string.format(
+                "Status: Farming Coins for Soldier (%d / %d)",
+                coins or 0,
+                price or AUTO_MAX_FALLBACK_TOWER_PRICES.Soldier
+            )
+
+            if directMatchmaking then
+                return StartMatchmaking("Easy", "survival")
+            end
+
+            RunEasy()
+            return true
+        end
+    end
+
+    if level >= 50 then
+        if not IsTowerOwned("Pyromancer") then
+            local owned, coins, price = TryBuyAutoMaxCoinTower("Pyromancer")
+
+            if not owned then
+                statusDisplay.Text = string.format(
+                    "Status: Farming Coins for Pyromancer (%d / %d)",
+                    coins or 0,
+                    price or AUTO_MAX_FALLBACK_TOWER_PRICES.Pyromancer
+                )
+
+                if directMatchmaking then
+                    return StartMatchmaking("Molten", "survival")
+                end
+
+                RunMolten()
+                return true
+            end
+        end
+
+        if not IsTowerOwned("Hunter") then
+            local owned, coins, price = TryBuyAutoMaxCoinTower("Hunter")
+
+            if not owned then
+                statusDisplay.Text = string.format(
+                    "Status: Farming Coins for Hunter (%d / %d)",
+                    coins or 0,
+                    price or AUTO_MAX_FALLBACK_TOWER_PRICES.Hunter
+                )
+
+                if directMatchmaking then
+                    return StartMatchmaking("Molten", "survival")
+                end
+
+                RunMolten()
+                return true
+            end
+        end
+
+        SetAutoMaxCoinFarmTower(nil)
+
+        if directMatchmaking then
+            return StartMatchmaking("Easy", "hardcore")
+        end
+
+        RunHardcore()
+        return true
+    end
+
+    SetAutoMaxCoinFarmTower(nil)
+
+    if level >= 15 then
+        if directMatchmaking then
+            return StartMatchmaking("Molten", "survival")
+        end
+
+        RunMolten()
+        return true
+    end
+
+    if directMatchmaking then
+        return StartMatchmaking("Easy", "survival")
+    end
+
+    RunEasy()
+    return true
+end
+
 local function RouteAutoMaxLevel175(directMatchmaking)
     if game.PlaceId ~= LOBBY_PLACE_ID then
         if Settings.AutoMaxLayByPending == true then
@@ -4175,8 +4371,13 @@ end
 local function RouteProgressionByLevel(level, directMatchmaking)
     level = tonumber(level) or 0
 
-    if AutoMaxMode and level >= 175 then
-        return RouteAutoMaxLevel175(directMatchmaking)
+    if AutoMaxMode then
+        if level >= 175 then
+            SetAutoMaxCoinFarmTower(nil)
+            return RouteAutoMaxLevel175(directMatchmaking)
+        end
+
+        return RouteAutoMaxBelow175(level, directMatchmaking)
     end
 
     if IsWinStrategy() then
@@ -4505,8 +4706,16 @@ local function RunAutoProgression()
         local expectedDifficulty = IsWinStrategy() and "Easy" or GetProgressModeName(level)
         local currentDifficulty = GetCurrentDifficulty()
 
-        if AutoMaxMode and level >= 175 then
-            expectedDifficulty = currentDifficulty
+        if AutoMaxMode then
+            if level >= 175 then
+                expectedDifficulty = currentDifficulty
+            else
+                local coinFarmTower = GetAutoMaxCoinFarmTower()
+
+                if coinFarmTower then
+                    expectedDifficulty = GetAutoMaxCoinFarmMode(coinFarmTower)
+                end
+            end
         end
 
         if expectedDifficulty ~= "Completed" then
@@ -4594,6 +4803,7 @@ function AutoProgress.Stop()
     AutoMaxMode = false
     Settings.AutoMaxProgression = false
     Settings.AutoMaxLayByPending = false
+    Settings.AutoMaxCoinFarmTower = ""
     Settings.RunStartedAt = 0
 
     ResetMatchTimeout()
@@ -4607,12 +4817,6 @@ function AutoProgress.Stop()
     SaveSettings()
     UpdateToggleAppearance()
 
-    if IsInGame() then
-        task.spawn(function()
-            
-            BackToLobby()
-        end)
-    end
 
     return true
 end
@@ -4667,6 +4871,10 @@ local function HandleRewardMilestone(currentMode, newLevel)
     newLevel = tonumber(newLevel) or 0
 
     if not AutoProgression then
+        return false
+    end
+
+    if AutoMaxMode and GetAutoMaxCoinFarmTower() then
         return false
     end
 
@@ -4911,7 +5119,30 @@ task.spawn(function()
                             currentTarget = GetTargetLevel(oldLevel)
                         end
 
-                        if rewardLevel >= 175 then
+                        local autoMaxCoinFarmTower =
+                            AutoMaxMode and GetAutoMaxCoinFarmTower() or nil
+
+                        if autoMaxCoinFarmTower and rewardLevel < 175 then
+                            local neededPrice =
+                                GetAutoMaxFallbackTowerPrice(autoMaxCoinFarmTower)
+                                or math.huge
+                            local trackedCoins = GetTrackedCoins()
+
+                            if trackedCoins >= neededPrice then
+                                task.spawn(function()
+                                    task.wait(0.5)
+                                    statusDisplay.Text =
+                                        "Status: Returning to Lobby to Buy "
+                                        .. autoMaxCoinFarmTower
+                                    BackToLobby()
+                                end)
+                            else
+                                task.spawn(function()
+                                    task.wait(0.5)
+                                    RestartMatchAndRerunStrategy()
+                                end)
+                            end
+                        elseif rewardLevel >= 175 then
                             if AutoMaxMode then
                                 task.spawn(function()
                                     task.wait(0.5)
@@ -5009,8 +5240,16 @@ task.spawn(function()
                     local expectedDifficulty =
                         IsWinStrategy() and "Easy" or GetProgressModeName(displayLevel)
 
-                    if AutoMaxMode and displayLevel >= 175 then
-                        expectedDifficulty = currentDifficulty
+                    if AutoMaxMode then
+                        if displayLevel >= 175 then
+                            expectedDifficulty = currentDifficulty
+                        else
+                            local coinFarmTower = GetAutoMaxCoinFarmTower()
+
+                            if coinFarmTower then
+                                expectedDifficulty = GetAutoMaxCoinFarmMode(coinFarmTower)
+                            end
+                        end
                     end
 
                     if expectedDifficulty == "Completed" and not AutoMaxMode then
