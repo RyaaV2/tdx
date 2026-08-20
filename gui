@@ -67,6 +67,7 @@ local Defaults = {
     ClaimRewards = false,
     AutoFarmGatlingStrategy = "Win",
     AutoProgressEnabled = false,
+    AutoMaxEnabled = false,
     Webhook = "",
     PrivateCode = "",
     PrivateTeleportPending = false,
@@ -426,6 +427,51 @@ local function StartAutoProgress()
     end)
 end
 
+local AutoMaxTaskRunning = false
+
+local function StartAutoMax()
+    if AutoMaxTaskRunning then
+        return
+    end
+
+    if Globals.AutoMaxEnabled ~= true then
+        return
+    end
+
+    AutoMaxTaskRunning = true
+
+    task.spawn(function()
+        local farm = LoadAutoProgressFarm()
+
+        if not farm or not farm.StartAutoMax then
+            AutoMaxTaskRunning = false
+            return
+        end
+
+        pcall(function()
+            farm.StartAutoMax()
+        end)
+
+        AutoMaxTaskRunning = false
+    end)
+end
+
+local function StopAutoMax()
+    AutoMaxTaskRunning = false
+
+    local farm = AutoProgressFarm or shared.AutoProgress
+
+    if farm and farm.StopAutoMax then
+        pcall(function()
+            farm.StopAutoMax()
+        end)
+    elseif farm and farm.Stop then
+        pcall(function()
+            farm.Stop()
+        end)
+    end
+end
+
 local function StopAutoProgress()
     StartTaskRunning = false
 
@@ -628,8 +674,86 @@ local Window = Library:Window({
 local LevelLabel
 local CoinsLabel
 local GatlingLabel
+local AutoMaxToggle
+local AutoProgressToggle
+local SwitchingModes = false
+
+local function SetToggleVisual(toggleObject, value)
+    if not toggleObject then
+        return
+    end
+
+    pcall(function()
+        if toggleObject.SetValue then
+            toggleObject:SetValue(value)
+        elseif toggleObject.Set then
+            toggleObject:Set(value)
+        end
+    end)
+end
 
 local Automation = Window:Tab({Title = "Automation", Icon = "bot"}) do
+    Automation:Section({Title = "Auto Max Account"})
+
+    Automation:Label({
+        Title = "Full Account Progression",
+        Desc = "Automatically buys towers, upgrades skills, and completes progression goals. VIP Gamepass for Mobile or VIP Server for PC is recommended for this."
+    })
+
+    local AutoMaxStatus = Automation:Label({
+        Title = Globals.AutoMaxEnabled and "Status: Running" or "Status: Stopped",
+        Desc = ""
+    })
+
+    AutoMaxToggle = Automation:Toggle({
+        Title = "Start Auto Max Account",
+        Desc = "Starts or stops full account progression.",
+        Value = Globals.AutoMaxEnabled or false,
+        Callback = function(value)
+            SetSetting("AutoMaxEnabled", value)
+
+            if AutoMaxStatus and AutoMaxStatus.SetTitle then
+                AutoMaxStatus:SetTitle(value and "Status: Running" or "Status: Stopped")
+            end
+
+            if SwitchingModes then
+                return
+            end
+
+            if value then
+                if Globals.AutoProgressEnabled == true then
+                    SwitchingModes = true
+                    SetSetting("AutoProgressEnabled", false)
+                    StopAutoProgress()
+                    SetToggleVisual(AutoProgressToggle, false)
+                    SwitchingModes = false
+                end
+
+                StartAutoMax()
+            else
+                StopAutoMax()
+
+                if game.PlaceId ~= LOBBY_PLACE_ID then
+                    task.delay(2, function()
+                        if Globals.AutoMaxEnabled ~= true then
+                            TeleportToLobby()
+                        end
+                    end)
+                end
+            end
+        end
+    })
+
+    Automation:Button({
+        Title = "Buy Key",
+        Desc = "Copies the purchase link to your clipboard.",
+        Callback = function()
+            if setclipboard then
+                setclipboard("https://rya.mysellauth.com/product/auto-progress-max")
+            end
+        end
+    })
+
     Automation:Section({Title = "Auto Farm Until Gatling"})
 
     LevelLabel = Automation:Label({
@@ -782,14 +906,29 @@ local Automation = Window:Tab({Title = "Automation", Icon = "bot"}) do
         end
     })
 
-    Automation:Toggle({
+    AutoProgressToggle = Automation:Toggle({
         Title = "Start Auto Progress",
         Desc = "Starts or stops Auto Farm Until Gatling",
         Value = Globals.AutoProgressEnabled or false,
         Callback = function(value)
             SetSetting("AutoProgressEnabled", value)
 
+            if SwitchingModes then
+                return
+            end
+
             if value then
+                if Globals.AutoMaxEnabled == true then
+                    SwitchingModes = true
+                    SetSetting("AutoMaxEnabled", false)
+                    StopAutoMax()
+                    SetToggleVisual(AutoMaxToggle, false)
+                    if AutoMaxStatus and AutoMaxStatus.SetTitle then
+                        AutoMaxStatus:SetTitle("Status: Stopped")
+                    end
+                    SwitchingModes = false
+                end
+
                 if game.PlaceId == LOBBY_PLACE_ID
                     and not IsMobile
                     and Globals.PrivateCode
@@ -844,12 +983,7 @@ local Automation = Window:Tab({Title = "Automation", Icon = "bot"}) do
                 SetAutoProgressStatus("Auto Progress Running - " .. (Globals.AutoFarmGatlingStrategy or "Win"))
             else
                 StopAutoProgress()
-
-                if game.PlaceId == LOBBY_PLACE_ID then
-                    SetAutoProgressStatus("Auto Progress Turned Off")
-                else
-                    SetAutoProgressStatus("Auto Progress Turned Off - Teleporting to Lobby...")
-                end
+                SetAutoProgressStatus("Auto Progress Turned Off")
 
                 local webhook = ProgressWebhook or shared.ProgressWebhook
                 if webhook and webhook.Stop then
@@ -858,11 +992,7 @@ local Automation = Window:Tab({Title = "Automation", Icon = "bot"}) do
                     end)
                 end
 
-                task.delay(2, function()
-                    if Globals.AutoProgressEnabled ~= true then
-                        TeleportToLobby()
-                    end
-                end)
+
             end
         end
     })
@@ -1111,6 +1241,13 @@ local function RefreshUserStats(snapshot)
     end
 end
 
+if Globals.AutoMaxEnabled then
+    task.spawn(function()
+        task.wait(1)
+        StartAutoMax()
+    end)
+end
+
 if Globals.AutoProgressEnabled then
     task.spawn(function()
         task.wait(1)
@@ -1183,6 +1320,10 @@ local GuiBase = {
     LoadAutoProgressFarm = LoadAutoProgressFarm,
     StartAutoProgress = StartAutoProgress,
     StopAutoProgress = StopAutoProgress,
+    StartAutoMax = StartAutoMax,
+    StopAutoMax = StopAutoMax,
+    AutoMaxToggle = AutoMaxToggle,
+    AutoProgressToggle = AutoProgressToggle,
     TeleportToLobby = TeleportToLobby,
     WaitForGame = WaitForGame,
     RefreshUserStats = RefreshUserStats,
