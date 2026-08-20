@@ -3835,64 +3835,6 @@ StartVoteSkip(11, 39)
 
 loadstring(game:HttpGet("https://raw.githubusercontent.com/avtryxz/autogutlin/refs/heads/main/autogutlin.lua"))()
 
-local function HideRailgunGui()
-    local function hideFrom(root)
-        if not root then
-            return false
-        end
-
-        for _, obj in ipairs(root:GetDescendants()) do
-            local isTextObject =
-                obj:IsA("TextLabel")
-                or obj:IsA("TextButton")
-                or obj:IsA("TextBox")
-
-            if isTextObject then
-                local textValue = tostring(obj.Text or "")
-
-                if textValue:find("The Railgun", 1, true) then
-                    local current = obj
-
-                    while current and current ~= root do
-                        if current:IsA("ScreenGui") then
-                            current.Enabled = false
-                            return true
-                        end
-
-                        current = current.Parent
-                    end
-
-                    local top = obj
-                    while top.Parent and top.Parent ~= root do
-                        top = top.Parent
-                    end
-
-                    if top:IsA("GuiObject") then
-                        top.Visible = false
-                        return true
-                    end
-                end
-            end
-        end
-
-        return false
-    end
-
-    local coreGui = game:GetService("CoreGui")
-
-    for _ = 1, 20 do
-        if hideFrom(coreGui) or hideFrom(PlayerGui) then
-            return true
-        end
-
-        task.wait(0.25)
-    end
-
-    return false
-end
-
-task.spawn(HideRailgunGui)
-
 PlaceTower("Trapper", Vector3.new(-2.537647247314453, 242.99996948242188, 235.9556427001953))
 Ready()
 
