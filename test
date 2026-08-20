@@ -1,0 +1,3885 @@
+if not game:IsLoaded() then
+    game.Loaded:Wait()
+end
+
+local Players = game:GetService("Players")
+local UIS = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local HttpService = game:GetService("HttpService")
+local CoreGui = game:GetService("CoreGui")
+local TeleportService = game:GetService("TeleportService")
+local MarketplaceService = game:GetService("MarketplaceService")
+local VirtualUser = game:GetService("VirtualUser")
+
+local plr = Players.LocalPlayer or Players.PlayerAdded:Wait()
+
+plr.Idled:Connect(function()
+    pcall(function()
+        VirtualUser:CaptureController()
+        VirtualUser:Button2Down(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+        task.wait(0.1)
+        VirtualUser:Button2Up(Vector2.new(0, 0), workspace.CurrentCamera.CFrame)
+    end)
+end)
+
+local SETTINGS_FILE =
+    "AutoProgress_" .. tostring(plr.Name) .. ".json"
+local LOBBY_PLACE_ID = 3260590327
+
+local COLORS = {
+    Background = Color3.fromRGB(29, 28, 38),
+    Surface = Color3.fromRGB(24, 24, 31),
+    Border = Color3.fromRGB(36, 35, 48),
+    Secondary = Color3.fromRGB(48, 47, 62),
+
+    Accent = Color3.fromRGB(108, 30, 210),
+    AccentHover = Color3.fromRGB(124, 44, 227),
+    AccentPressed = Color3.fromRGB(89, 23, 180),
+
+    Text = Color3.fromRGB(255, 255, 255),
+    MutedText = Color3.fromRGB(150, 150, 150)
+}
+
+local PlayerGui = plr:WaitForChild("PlayerGui")
+local rf = ReplicatedStorage:WaitForChild("RemoteFunction")
+
+local function BackToLobby()
+    if game.PlaceId == LOBBY_PLACE_ID then
+        return true
+    end
+
+    local network = ReplicatedStorage:FindFirstChild("Network")
+    local teleportFolder = network and network:FindFirstChild("Teleport")
+    local backToLobby = teleportFolder and teleportFolder:FindFirstChild("RE:backToLobby")
+
+    local remoteWorked = false
+
+    if backToLobby then
+        remoteWorked = pcall(function()
+            backToLobby:FireServer()
+        end)
+    end
+
+    if remoteWorked then
+        task.wait(5)
+
+        if game.PlaceId == LOBBY_PLACE_ID then
+            return true
+        end
+    end
+
+    warn("[BACK TO LOBBY] Remote failed or did not teleport, using PlaceId fallback")
+
+    local ok = pcall(function()
+        TeleportService:Teleport(
+            LOBBY_PLACE_ID,
+            plr
+        )
+    end)
+
+    return ok
+end
+
+local MatchTimeoutToken = 0
+local MatchStartCoins = 0
+local CurrentTrackedCoins = 0
+local GATLING_PRICE = 35000
+local GATLING_TOWER = "Gatling Gun"
+
+local function ResetMatchTimeout()
+    MatchTimeoutToken += 1
+end
+
+local function GetTrackedCoins()
+    local liveCoins = 0
+    local coinsObject = plr:FindFirstChild("Coins")
+
+    if coinsObject and coinsObject.Value ~= nil then
+        liveCoins = tonumber(coinsObject.Value) or 0
+    end
+
+    if CurrentTrackedCoins > liveCoins then
+        return CurrentTrackedCoins
+    end
+
+    return liveCoins
+end
+
+local function RecordMatchStartCoins()
+    local liveCoins = 0
+    local coinsObject = plr:FindFirstChild("Coins")
+
+    if coinsObject and coinsObject.Value ~= nil then
+        liveCoins = tonumber(coinsObject.Value) or 0
+    end
+
+    MatchStartCoins = math.max(liveCoins, CurrentTrackedCoins or 0)
+    CurrentTrackedCoins = MatchStartCoins
+
+    
+end
+
+local function UpdateTrackedCoinsFromReward()
+    local playerReplicator
+    local stateReplicators = ReplicatedStorage:FindFirstChild("StateReplicators")
+
+    if stateReplicators then
+        for _, replicator in ipairs(stateReplicators:GetChildren()) do
+            if replicator.Name == "PlayerReplicator"
+                and tonumber(replicator:GetAttribute("UserId")) == plr.UserId then
+                playerReplicator = replicator
+                break
+            end
+        end
+    end
+
+    local reward = playerReplicator
+        and tonumber(playerReplicator:GetAttribute("CoinsReward"))
+        or 0
+
+    CurrentTrackedCoins = (tonumber(MatchStartCoins) or 0) + reward
+
+    
+    
+    
+
+    return CurrentTrackedCoins, reward
+end
+
+local function StartMatchTimeout()
+    MatchTimeoutToken += 1
+    local myToken = MatchTimeoutToken
+
+    RecordMatchStartCoins()
+
+    
+
+    task.spawn(function()
+        task.wait(15 * 60)
+
+        if myToken ~= MatchTimeoutToken then
+            return
+        end
+
+        local stateReplicators = ReplicatedStorage:FindFirstChild("StateReplicators")
+        local rep = stateReplicators and stateReplicators:FindFirstChild("GameStateReplicator")
+
+        if rep and rep:GetAttribute("GameOver") == true then
+            ResetMatchTimeout()
+            return
+        end
+
+        warn("[ANTI STUCK] GameOver did not happen within 15 minutes, returning to lobby")
+        ResetMatchTimeout()
+        BackToLobby()
+    end)
+end
+
+local Settings = {
+    AutoProgression = false,
+    RunStartedAt = 0,
+    ProgressInitialized = false,
+    SavedLevel = 0,
+    LastLobbyLevel = 0,
+    InGameLevel = nil,
+    Chapter0Completed = false,
+    GatlingUnlocked = false
+}
+
+local lobbyProgressLoaded = false
+
+if isfile and isfile(SETTINGS_FILE) then
+    local success, data = pcall(function()
+        return HttpService:JSONDecode(
+            readfile(SETTINGS_FILE)
+        )
+    end)
+
+    if success and type(data) == "table" then
+        for key, defaultValue in pairs(Settings) do
+            if data[key] ~= nil then
+                Settings[key] = data[key]
+            else
+                Settings[key] = defaultValue
+            end
+        end
+    end
+end
+
+local function SaveSettings()
+    if not writefile then
+        return
+    end
+
+    local data = {}
+
+    if isfile and readfile and isfile(SETTINGS_FILE) then
+        pcall(function()
+            local existing = HttpService:JSONDecode(readfile(SETTINGS_FILE))
+            if type(existing) == "table" then
+                data = existing
+            end
+        end)
+    end
+
+    for key, value in pairs(Settings) do
+        data[key] = value
+    end
+
+    pcall(function()
+        writefile(
+            SETTINGS_FILE,
+            HttpService:JSONEncode(data)
+        )
+    end)
+end
+
+local function FormatRunningTime()
+    local startedAt = tonumber(Settings.RunStartedAt) or 0
+
+    if startedAt <= 0 then
+        return "00:00:00"
+    end
+
+    local totalSeconds = math.max(os.time() - startedAt, 0)
+
+    local hours = math.floor(totalSeconds / 3600)
+    local minutes = math.floor((totalSeconds % 3600) / 60)
+    local seconds = totalSeconds % 60
+
+    return string.format("%02d:%02d:%02d", hours, minutes, seconds)
+end
+
+local function GetTargetLevel(level)
+    level = tonumber(level) or 0
+
+    if level < 15 then
+        return 15
+    elseif level < 50 then
+        return 50
+    elseif level < 175 then
+        return 175
+    end
+
+    return nil
+end
+
+local function WaitForLoadingScreen()
+    local loadingScreen =
+        PlayerGui:FindFirstChild("LoadingScreen")
+
+    local content =
+        loadingScreen
+        and loadingScreen:FindFirstChild("content")
+
+    if content then
+        while content.Visible do
+            content
+                :GetPropertyChangedSignal("Visible")
+                :Wait()
+        end
+    end
+end
+
+WaitForLoadingScreen()
+
+local function IsLoading()
+    local attrLoading =
+        plr:GetAttribute("Loading") == true
+
+    local attrTeleporting =
+        plr:GetAttribute("Teleporting") == true
+
+    local pg = plr:FindFirstChild("PlayerGui")
+
+    local loadingScreen =
+        pg
+        and pg:FindFirstChild("LoadingScreen")
+
+    local content =
+        loadingScreen
+        and loadingScreen:FindFirstChild("content")
+
+    local contentVisible =
+        content
+        and content.Visible == true
+
+    return
+        attrLoading
+        or attrTeleporting
+        or contentVisible
+end
+
+local function AntiStuck()
+    task.spawn(function()
+        local secondsStuck = 0
+
+        while true do
+            task.wait(1)
+
+            if IsLoading() then
+                secondsStuck += 1
+
+                if secondsStuck >= 60 then
+                    
+
+                    pcall(function()
+                        TeleportService:Teleport(
+                            LOBBY_PLACE_ID,
+                            plr
+                        )
+                    end)
+
+                    secondsStuck = 0
+                end
+            else
+                secondsStuck = 0
+            end
+        end
+    end)
+end
+
+AntiStuck()
+
+local function WaitUntilLoaded()
+    
+
+    while IsLoading() do
+        
+        task.wait(1)
+    end
+
+    
+end
+
+local function GetStat(name)
+    local obj = plr:FindFirstChild(name)
+
+    if obj and obj.Value ~= nil then
+        return tonumber(obj.Value) or 0
+    end
+
+    local attr = plr:GetAttribute(name)
+
+    if attr ~= nil then
+        return tonumber(attr) or 0
+    end
+
+    local leaderstats =
+        plr:FindFirstChild("leaderstats")
+
+    local stat =
+        leaderstats
+        and leaderstats:FindFirstChild(name)
+
+    if stat and stat.Value ~= nil then
+        return tonumber(stat.Value) or 0
+    end
+
+    return 0
+end
+
+local function TextToNumber(text)
+    if type(text) ~= "string" then
+        return nil
+    end
+
+    local cleaned = text:gsub(",", "")
+    local numberText = cleaned:match("%d+")
+
+    return numberText and tonumber(numberText) or nil
+end
+
+local function IsInGame()
+    local stateReplicators =
+        ReplicatedStorage:FindFirstChild(
+            "StateReplicators"
+        )
+
+    if not stateReplicators then
+        return false
+    end
+
+    return stateReplicators:FindFirstChild(
+        "GameStateReplicator"
+    ) ~= nil
+end
+
+local STORY_MISSIONS = {
+    ["Chapter0Mission1"] = "Boot Camp",
+    ["Chapter0Mission2"] = "Live Fire",
+    ["Chapter0Mission3"] = "Breach Protocol",
+    ["Chapter0Mission4"] = "Brute Force"
+}
+
+local function GetStoryMissionName()
+    local stateReplicators = ReplicatedStorage:FindFirstChild("StateReplicators")
+    local gameStateReplicator = stateReplicators and stateReplicators:FindFirstChild("GameStateReplicator")
+
+    if not gameStateReplicator then
+        return nil
+    end
+
+    return STORY_MISSIONS[gameStateReplicator:GetAttribute("Difficulty")]
+end
+
+local function GetPlayerReplicator()
+    local stateReplicators =
+        ReplicatedStorage:FindFirstChild(
+            "StateReplicators"
+        )
+
+    if not stateReplicators then
+        return nil
+    end
+
+    for _, replicator in ipairs(
+        stateReplicators:GetChildren()
+    ) do
+        if replicator.Name == "PlayerReplicator"
+        and tonumber(
+            replicator:GetAttribute("UserId")
+        ) == plr.UserId then
+            return replicator
+        end
+    end
+
+    return nil
+end
+
+local function GetRewardLevelObject()
+    local rewardsGui = PlayerGui:FindFirstChild("ReactGameNewRewards")
+    local rootFrame = rewardsGui and rewardsGui:FindFirstChild("Frame")
+    local gameOver = rootFrame and rootFrame:FindFirstChild("gameOver")
+    local rewardsScreen = gameOver and gameOver:FindFirstChild("RewardsScreen")
+    local other = rewardsScreen and rewardsScreen:FindFirstChild("other")
+    local levelFrame = other and other:FindFirstChild("level")
+
+    return levelFrame and levelFrame:FindFirstChild("currentLevel") or nil
+end
+
+local function ReadRewardScreenLevel()
+    local currentLevelObj = GetRewardLevelObject()
+
+    if not currentLevelObj then
+        return nil
+    end
+
+    return TextToNumber(tostring(currentLevelObj.Text or ""))
+end
+
+local function WaitForFinalRewardLevel()
+    local timeoutAt = os.clock() + 10
+    local level
+
+    repeat
+        level = ReadRewardScreenLevel()
+
+        if level ~= nil then
+            break
+        end
+
+        task.wait(0.1)
+    until os.clock() >= timeoutAt
+
+    if level == nil then
+        return nil
+    end
+
+    task.wait(1.5)
+
+    local lastLevel = nil
+    local stableReads = 0
+    local stableNeeded = 10
+    local settleTimeoutAt = os.clock() + 10
+
+    while os.clock() < settleTimeoutAt do
+        level = ReadRewardScreenLevel()
+
+        if level ~= nil then
+            if level == lastLevel then
+                stableReads += 1
+            else
+                lastLevel = level
+                stableReads = 1
+            end
+
+            if stableReads >= stableNeeded then
+                return level
+            end
+        end
+
+        task.wait(0.1)
+    end
+
+    return lastLevel
+end
+
+local function GetLobbyLevel()
+    local level = GetStat("Level")
+
+    if level == nil or level < 0 then
+        return nil
+    end
+
+    return level
+end
+
+local function ResetProgressDataForLobby()
+    lobbyProgressLoaded = Settings.ProgressInitialized == true
+end
+
+local function SaveLobbyProgress()
+    local level = GetLobbyLevel()
+
+    if level == nil then
+        return false
+    end
+
+    Settings.ProgressInitialized = true
+    Settings.SavedLevel = level
+    Settings.LastLobbyLevel = level
+    Settings.InGameLevel = level
+    lobbyProgressLoaded = true
+
+    SaveSettings()
+
+    return true, level
+end
+
+local gui = {Parent = true}
+local statusDisplay = {Text = "Status: Disabled"}
+local levelDisplay = {Text = "Current Level: 0"}
+local targetDisplay = {Text = "Loading Progress..."}
+local gameStateDisplay = {Text = "Location: Detecting..."}
+local runtimeDisplay = {Text = "Running Time: 00:00:00"}
+
+local AutoProgression = false
+local AutoProgressStrategy = shared.AutoProgressStrategy == "Lose" and "Lose" or "Win"
+
+local function IsWinStrategy()
+    return AutoProgressStrategy == "Win"
+end
+
+local running = false
+local runningEasy = false
+local runningMolten = false
+local runningHardcore = false
+local wrongDifficultyMatchmakingRunning = false
+
+local function UpdateToggleAppearance()
+    if Settings.GatlingUnlocked == true then
+        statusDisplay.Text = "Gatling Unlocked"
+    elseif AutoProgression then
+        statusDisplay.Text = "Status: Starting..."
+    else
+        statusDisplay.Text = "Status: Disabled"
+    end
+end
+
+local function ApplyRewardLevelToGui(level)
+    level = tonumber(level)
+
+    if not level or level <= 0 then
+        return false
+    end
+
+    Settings.ProgressInitialized = true
+    Settings.SavedLevel = level
+    Settings.InGameLevel = level
+
+    levelDisplay.Text = string.format(
+        "Current Level: %d",
+        level
+    )
+
+    local targetLevel = GetTargetLevel(level)
+
+    if targetLevel then
+        targetDisplay.Text = string.format(
+            "Target: Level %d",
+            targetLevel
+        )
+    elseif level >= 175 and AutoProgression then
+        targetDisplay.Text = "Target: Gatling Gun"
+    else
+        targetDisplay.Text = "Target: Completed"
+    end
+
+    return true
+end
+
+local function CaptureRewardLevel()
+    local level = WaitForFinalRewardLevel()
+
+    if level == nil then
+        return false
+    end
+
+    local changed =
+        Settings.SavedLevel ~= level
+        or Settings.ProgressInitialized ~= true
+
+    Settings.ProgressInitialized = true
+    Settings.SavedLevel = level
+    Settings.InGameLevel = level
+
+    ApplyRewardLevelToGui(level)
+
+    if changed then
+        SaveSettings()
+    end
+
+    return true, level
+end
+
+local function BuyTower(towerName)
+    
+
+    local success, result = pcall(function()
+        return rf:InvokeServer(
+            "Shop",
+            "Purchase",
+            "Tower",
+            towerName
+        )
+    end)
+
+    if not success then
+        warn("Failed to buy " .. towerName)
+        return nil
+    end
+
+    return result
+end
+
+local function IsTowerOwned(targetTower)
+    local inventory = PlayerGui:WaitForChild(
+        "ReactUniversalInventoryView",
+        30
+    )
+
+    if not inventory then
+        warn("Inventory GUI not found.")
+        return false
+    end
+
+    local towerFrame = inventory
+        :WaitForChild("Holder")
+        :WaitForChild("windowFrame")
+        :WaitForChild("towersInventoryFrame")
+
+    for _, tower in ipairs(towerFrame:GetDescendants()) do
+        if tower:IsA("Frame") then
+            local refLabel = tower:FindFirstChild("refLabel", true)
+            local background = tower:FindFirstChild("background", true)
+
+            if refLabel
+                and background
+                and refLabel.Text == targetTower
+                and background.Visible == false then
+
+                return true
+            end
+        end
+    end
+
+    return false
+end
+
+local function BuyTowerIfNeeded(towerName)
+    if IsTowerOwned(towerName) then
+        
+        return true
+    end
+
+    
+    return BuyTower(towerName)
+end
+
+local function StartCommanderAutoClick()
+    task.spawn(function()
+
+        local function getCommanderCap()
+            local dialog = PlayerGui:FindFirstChild("ReactOverridesDialog")
+            local frame = dialog and dialog:FindFirstChild("Frame")
+            local character = frame and frame:FindFirstChild("dialogCharacter")
+            local worldModel = character and character:FindFirstChild("worldModel")
+            local commander = worldModel and worldModel:FindFirstChild("Commander")
+            local outfit = commander and commander:FindFirstChild("Outfit")
+
+            return outfit and outfit:FindFirstChild("CommanderCap1")
+        end
+
+        local function getDialogListener()
+            local dialog = PlayerGui:FindFirstChild("ReactOverridesDialog")
+            local frame = dialog and dialog:FindFirstChild("Frame")
+            local content = frame and frame:FindFirstChild("content")
+
+            if not content then
+                return nil
+            end
+
+            local connections = getconnections(content.InputBegan)
+            local connection = connections[1]
+
+            if not connection or not connection.Function then
+                return nil
+            end
+
+            local manager = getupvalues(connection.Function)[1]
+
+            if type(manager) ~= "table"
+                or type(manager._listeners) ~= "table" then
+                return nil
+            end
+
+            for _, listener in pairs(manager._listeners) do
+                if type(listener) == "function" then
+                    for _, constant in ipairs(getconstants(listener)) do
+                        if constant == "MouseButton1" then
+                            return listener, content
+                        end
+                    end
+                end
+            end
+
+            return nil
+        end
+
+        local function clickDialog(listener, content)
+            listener(content, {
+                UserInputType = Enum.UserInputType.MouseButton1
+            })
+        end
+
+        while task.wait(0.2) do
+            if getCommanderCap() then
+                local listener, content = getDialogListener()
+
+                if listener then
+                    pcall(function()
+                        clickDialog(listener, content)
+                    end)
+                end
+            end
+        end
+
+    end)
+end
+
+StartCommanderAutoClick()
+
+local StoryTimeoutToken = 0
+local STORY_TIMEOUT = 5 * 60
+
+local function StopStoryTimeout()
+    StoryTimeoutToken += 1
+end
+
+local function StartStoryTimeout(rep, difficulty)
+    StopStoryTimeout()
+
+    local myToken = StoryTimeoutToken
+    local storyName = STORY_MISSIONS[difficulty] or tostring(difficulty)
+
+    
+
+    task.spawn(function()
+        task.wait(STORY_TIMEOUT)
+
+        if myToken ~= StoryTimeoutToken then
+            return
+        end
+
+        if not AutoProgression then
+            return
+        end
+
+        if not rep or not rep.Parent then
+            return
+        end
+
+        if rep:GetAttribute("GameOver") == true then
+            StopStoryTimeout()
+            return
+        end
+
+        warn(
+            "[STORY ANTI STUCK]",
+            storyName,
+            "did not reach GameOver within 5 minutes. Returning to lobby..."
+        )
+
+        statusDisplay.Text =
+            "Status: Story Stuck - Returning to Lobby..."
+
+        StopStoryTimeout()
+        BackToLobby()
+    end)
+end
+
+local function RunChapter0Progression()
+    if Settings.Chapter0Completed == true then
+        return false
+    end
+
+    local function clickGuiButton(btn)
+        if not btn then
+            return false
+        end
+
+        local ok = pcall(function()
+            if firesignal then
+                firesignal(btn.MouseButton1Down)
+                firesignal(btn.MouseButton1Up)
+                firesignal(btn.MouseButton1Click)
+                firesignal(btn.Activated)
+            else
+                for _, conn in ipairs(getconnections(btn.MouseButton1Down) or {}) do
+                    conn:Fire()
+                end
+
+                for _, conn in ipairs(getconnections(btn.MouseButton1Up) or {}) do
+                    conn:Fire()
+                end
+
+                for _, conn in ipairs(getconnections(btn.MouseButton1Click) or {}) do
+                    conn:Fire()
+                end
+
+                for _, conn in ipairs(getconnections(btn.Activated) or {}) do
+                    conn:Fire()
+                end
+            end
+        end)
+
+        return ok
+    end
+
+    local function checkSuccess(data)
+        if data == true then
+            return true
+        end
+
+        if type(data) == "table" and data.Success == true then
+            return true
+        end
+
+        local ok, isModel = pcall(function()
+            return data and data:IsA("Model")
+        end)
+
+        if ok and isModel then
+            return true
+        end
+
+        if type(data) == "userdata" then
+            return true
+        end
+
+        return false
+    end
+
+    local function placeUntilSuccess(name, position)
+        while true do
+            local ok, result = pcall(function()
+                return rf:InvokeServer(
+                    "Troops",
+                    "Place",
+                    {
+                        Rotation = CFrame.new(),
+                        Position = position
+                    },
+                    name
+                )
+            end)
+
+            if ok and checkSuccess(result) then
+                return true
+            end
+
+            task.wait(0.25)
+        end
+    end
+
+    local function upgradeUntilSuccess(tower, path)
+        while true do
+            local ok, result = pcall(function()
+                return rf:InvokeServer(
+                    "Troops",
+                    "Upgrade",
+                    "Set",
+                    {
+                        Troop = tower,
+                        Path = path or 1
+                    }
+                )
+            end)
+
+            if ok and checkSuccess(result) then
+                return true
+            end
+
+            task.wait(0.25)
+        end
+    end
+
+    local function findTowerAt(position)
+        while true do
+            for _, tower in ipairs(workspace.Towers:GetChildren()) do
+                if (tower:GetPivot().Position - position).Magnitude < 1.5 then
+                    return tower
+                end
+            end
+
+            task.wait(0.1)
+        end
+    end
+
+    if game.PlaceId == LOBBY_PLACE_ID then
+        local lobbyHud = PlayerGui:WaitForChild("ReactLobbyHud")
+
+        local playButton = lobbyHud
+            :WaitForChild("Frame")
+            :WaitForChild("matchmaking")
+            :WaitForChild("playButton")
+            :WaitForChild("content")
+
+        if not clickGuiButton(playButton) then
+            return
+        end
+
+        local matchmaking = PlayerGui:WaitForChild("ReactUniversalMatchmaking", 10)
+
+        if not matchmaking then
+            return
+        end
+
+        local matchmakingWindow = matchmaking
+            :WaitForChild("MatchmakingInterface")
+            :WaitForChild("Window")
+
+        local gamemodeBrowser = matchmakingWindow
+            :WaitForChild("GamemodeBrowser")
+
+        local storyButton = gamemodeBrowser
+            :WaitForChild("Window")
+            :WaitForChild("Navigation")
+            :WaitForChild("Content")
+            :WaitForChild("TabSlot_Story")
+            :WaitForChild("Button")
+
+        if not clickGuiButton(storyButton) then
+            return
+        end
+
+        local missions = gamemodeBrowser
+            :WaitForChild("MatchmakingSections")
+            :WaitForChild("Document")
+            :WaitForChild("Section_Story")
+            :WaitForChild("Window")
+            :WaitForChild("Content")
+            :WaitForChild("Missions")
+
+        local missionOrder = {
+            "Boot Camp",
+            "Live Fire",
+            "Breach Protocol",
+            "Brute Force"
+        }
+
+        local footer = missions:WaitForChild("FooterLabel", 10)
+
+        if not footer then
+            return
+        end
+
+        local completed = nil
+
+        repeat
+            local footerText = footer.ContentText or footer.Text or ""
+            local foundCompleted, foundTotal =
+                footerText:match("(%d+)%s*/%s*(%d+)")
+
+            foundCompleted = tonumber(foundCompleted)
+            foundTotal = tonumber(foundTotal)
+
+            if foundCompleted ~= nil
+                and foundTotal == 4 then
+                completed = foundCompleted
+            else
+                task.wait(0.1)
+            end
+        until completed ~= nil
+            or not AutoProgression
+
+        if not AutoProgression then
+            return
+        end
+
+        if completed >= 4 then
+            Settings.Chapter0Completed = true
+            SaveSettings()
+            return false
+        end
+
+        local bestMission = completed + 1
+
+        statusDisplay.Text =
+            "Status: Grinding " .. missionOrder[bestMission]
+
+        local args = {
+            "Multiplayer",
+            "v2:start",
+            {
+                mode = "story",
+                count = 1,
+                story = {
+                    chapter = 0,
+                    mission = bestMission
+                }
+            }
+        }
+
+        pcall(function()
+            rf:InvokeServer(unpack(args))
+        end)
+
+        return true
+    end
+
+    local stateReplicators = ReplicatedStorage:WaitForChild("StateReplicators")
+    local rep = stateReplicators:WaitForChild("GameStateReplicator")
+
+    local timeout = os.clock() + 15
+
+    while rep:GetAttribute("Difficulty") == nil and os.clock() < timeout do
+        task.wait(0.1)
+    end
+
+    local difficulty = rep:GetAttribute("Difficulty")
+
+    if STORY_MISSIONS[difficulty] then
+        StartStoryTimeout(rep, difficulty)
+    end
+
+    local NetworkMod = require(ReplicatedStorage.Shared.Modules.Network)
+    local GameStateMod = require(ReplicatedStorage.Shared.Modules.GameState)
+    local DialogStore = require(ReplicatedStorage.Client.Interfaces.Stores.Shared.DialogStore)
+
+    local function waitForPrompt(promptName)
+        while true do
+            local list = DialogStore.getState()
+
+            for _, dialog in ipairs(list) do
+                if dialog.dialog and dialog.dialog.TutorialPrompt == promptName then
+                    return
+                end
+            end
+
+            task.wait(0.2)
+        end
+    end
+
+    local function startVoteHandler()
+        task.spawn(function()
+            local voteRep = stateReplicators:WaitForChild("VoteReplicator", 10)
+
+            if not voteRep then
+                return
+            end
+
+            while true do
+                local enabled = voteRep:GetAttribute("Enabled")
+                local title = voteRep:GetAttribute("Title")
+
+                if enabled == true and (title == "Ready?" or title == "Skip?") then
+                    pcall(function()
+                        rf:InvokeServer("Voting", "Skip")
+                    end)
+                end
+
+                task.wait(0.5)
+            end
+        end)
+    end
+
+    local function startTutorialReady()
+        local introDone = false
+
+        task.spawn(function()
+            while not introDone do
+                local readyPrompt = false
+
+                pcall(function()
+                    readyPrompt = GameStateMod.Replicator:Get("TutorialReadyPrompt") == true
+                end)
+
+                if readyPrompt then
+                    pcall(function()
+                        NetworkMod.Channel("TutorialReady"):FireServer("Ready")
+                    end)
+
+                    introDone = true
+                end
+
+                task.wait(0.3)
+            end
+        end)
+
+        pcall(function()
+            NetworkMod.Channel("TutorialReady"):FireServer("Ready")
+        end)
+    end
+
+    local function waitForReadyVote()
+        local voteRep = stateReplicators:WaitForChild("VoteReplicator")
+
+        repeat
+            task.wait(0.1)
+        until voteRep:GetAttribute("Enabled") == true
+            and voteRep:GetAttribute("Title") == "Ready?"
+
+        pcall(function()
+            rf:InvokeServer("Voting", "Skip")
+        end)
+    end
+
+    local function updateRewardProgressGui()
+        local level = WaitForFinalRewardLevel()
+
+        if not level then
+            return false
+        end
+
+        Settings.SavedLevel = level
+        Settings.InGameLevel = level
+        ApplyRewardLevelToGui(level)
+        SaveSettings()
+        return true
+    end
+
+    local function startNextMissionWatcher()
+        task.spawn(function()
+            repeat
+                task.wait(0.1)
+            until rep:GetAttribute("GameOver") == true
+
+            StopStoryTimeout()
+
+            updateRewardProgressGui()
+            task.wait(3)
+
+            local nextMission = ReplicatedStorage
+                :WaitForChild("Network")
+                :WaitForChild("GameManager")
+                :WaitForChild("RF:NextMission")
+
+            pcall(function()
+                nextMission:InvokeServer()
+            end)
+        end)
+    end
+
+    local function startLobbyWatcher()
+        task.spawn(function()
+            repeat
+                task.wait(0.1)
+            until rep:GetAttribute("GameOver") == true
+
+            StopStoryTimeout()
+
+            updateRewardProgressGui()
+
+            Settings.Chapter0Completed = true
+            SaveSettings()
+
+            BackToLobby()
+        end)
+    end
+
+    if difficulty == "Chapter0Mission1" then
+        startNextMissionWatcher()
+        startVoteHandler()
+        startTutorialReady()
+
+        local scoutPosition = Vector3.new(-7.065066814422607, 17.500024795532227, -25.335153579711914)
+        local sniperPosition = Vector3.new(-4.383995056152344, 22.529680252075195, -0.24254226684570312)
+
+        waitForPrompt("ScoutSelectionPromptShown")
+
+        while rep:GetAttribute("AllowedSlot") ~= 1 do
+            task.wait(0.2)
+        end
+
+        task.wait(1.5)
+
+        pcall(function()
+            NetworkMod.Channel("TutorialFlow"):FireServer("PromptShown", "ScoutSelectionPromptShown")
+        end)
+
+        task.wait(0.5)
+
+        pcall(function()
+            NetworkMod.Channel("Hotbar"):FireServer("Click", 1)
+        end)
+
+        task.wait(0.5)
+
+        placeUntilSuccess("Scout", scoutPosition)
+
+        waitForPrompt("SniperSelectionPromptShown")
+
+        while rep:GetAttribute("AllowedSlot") ~= 2 do
+            task.wait(0.2)
+        end
+
+        task.wait(1.5)
+
+        pcall(function()
+            NetworkMod.Channel("TutorialFlow"):FireServer("PromptShown", "SniperSelectionPromptShown")
+        end)
+
+        task.wait(0.5)
+
+        pcall(function()
+            NetworkMod.Channel("Hotbar"):FireServer("Click", 2)
+        end)
+
+        task.wait(0.5)
+
+        placeUntilSuccess("Sniper", sniperPosition)
+
+        waitForPrompt("ScoutUpgradePromptShown")
+
+        while rep:GetAttribute("AllowedUpgradeTower") ~= "Scout"
+            or rep:GetAttribute("AllowedUpgradeType") ~= "Upgrade" do
+            task.wait(0.2)
+        end
+
+        task.wait(1.5)
+
+        pcall(function()
+            NetworkMod.Channel("TutorialFlow"):FireServer("PromptShown", "ScoutUpgradePromptShown")
+        end)
+
+        task.wait(0.5)
+
+        local scoutModel = findTowerAt(scoutPosition)
+
+        upgradeUntilSuccess(scoutModel, 1)
+        upgradeUntilSuccess(scoutModel, 1)
+
+        waitForPrompt("SniperUpgradePromptShown")
+
+        while rep:GetAttribute("AllowedUpgradeTower") ~= "Sniper"
+            or rep:GetAttribute("AllowedUpgradeType") ~= "Upgrade" do
+            task.wait(0.2)
+        end
+
+        task.wait(1.5)
+
+        pcall(function()
+            NetworkMod.Channel("TutorialFlow"):FireServer("PromptShown", "SniperUpgradePromptShown")
+        end)
+
+        task.wait(0.5)
+
+        local sniperModel = findTowerAt(sniperPosition)
+
+        upgradeUntilSuccess(sniperModel, 1)
+        upgradeUntilSuccess(sniperModel, 1)
+
+    elseif difficulty == "Chapter0Mission2" then
+        startNextMissionWatcher()
+        startVoteHandler()
+        startTutorialReady()
+
+        waitForPrompt("DemomanSelectionPromptShown")
+
+        while rep:GetAttribute("AllowedSlot") ~= 3 do
+            task.wait(0.2)
+        end
+
+        task.wait(1.5)
+
+        pcall(function()
+            NetworkMod.Channel("TutorialFlow"):FireServer("PromptShown", "DemomanSelectionPromptShown")
+        end)
+
+        task.wait(0.5)
+
+        pcall(function()
+            NetworkMod.Channel("Hotbar"):FireServer("Click", 3)
+        end)
+
+        task.wait(0.5)
+
+        local position1 = Vector3.new(-7.065066814422607, 17.500024795532227, -25.335153579711914)
+        local position2 = Vector3.new(-4.3240985870361, 17.500024795532, -27.702121734619)
+
+        placeUntilSuccess("Demoman", position1)
+
+        local demoman1 = findTowerAt(position1)
+
+        upgradeUntilSuccess(demoman1, 1)
+        upgradeUntilSuccess(demoman1, 1)
+
+        placeUntilSuccess("Demoman", position2)
+
+    elseif difficulty == "Chapter0Mission3" then
+        startNextMissionWatcher()
+
+        waitForReadyVote()
+
+        local position1 = Vector3.new(-7.065066814422607, 17.500024795532227, -25.335153579711914)
+        local position2 = Vector3.new(-4.3240985870361, 17.500024795532, -27.702121734619)
+        local position3 = Vector3.new(6.5802936553955, 17.500024795532, -19.85474395752)
+
+        placeUntilSuccess("Demoman", position1)
+
+        local demoman1 = findTowerAt(position1)
+
+        upgradeUntilSuccess(demoman1, 1)
+        upgradeUntilSuccess(demoman1, 1)
+
+        placeUntilSuccess("Demoman", position2)
+
+        local demoman2 = findTowerAt(position2)
+
+        upgradeUntilSuccess(demoman2, 1)
+
+        placeUntilSuccess("Demoman", position3)
+
+    elseif difficulty == "Chapter0Mission4" then
+        startLobbyWatcher()
+
+        waitForReadyVote()
+
+        local demomanPosition = Vector3.new(-7.065066814422607, 17.500024795532227, -25.335153579711914)
+        local soldier1Position = Vector3.new(-3.8663635253906, 17.500024795532, -25.594861984253)
+        local soldier2Position = Vector3.new(5.9531292915344, 17.500024795532, -23.399131774902)
+        local soldier3Position = Vector3.new(6.2566466331482, 17.500024795532, -20.291172027588)
+
+        placeUntilSuccess("Demoman", demomanPosition)
+
+        local demoman1 = findTowerAt(demomanPosition)
+
+        upgradeUntilSuccess(demoman1, 1)
+        upgradeUntilSuccess(demoman1, 1)
+
+        placeUntilSuccess("Soldier", soldier1Position)
+
+        local soldier1 = findTowerAt(soldier1Position)
+
+        upgradeUntilSuccess(soldier1, 1)
+        upgradeUntilSuccess(soldier1, 1)
+        upgradeUntilSuccess(soldier1, 1)
+
+        placeUntilSuccess("Soldier", soldier2Position)
+
+        local soldier2 = findTowerAt(soldier2Position)
+
+        upgradeUntilSuccess(soldier2, 1)
+        upgradeUntilSuccess(soldier2, 1)
+        upgradeUntilSuccess(soldier2, 1)
+        upgradeUntilSuccess(soldier2, 1)
+
+        upgradeUntilSuccess(soldier1, 1)
+        upgradeUntilSuccess(demoman1, 1)
+
+        placeUntilSuccess("Soldier", soldier3Position)
+
+        local soldier3 = findTowerAt(soldier3Position)
+
+        upgradeUntilSuccess(soldier3, 1)
+        upgradeUntilSuccess(soldier3, 1)
+        upgradeUntilSuccess(soldier3, 1)
+        upgradeUntilSuccess(soldier3, 1)
+    end
+    return true
+end
+
+local function GetLobbyBoardMaps()
+    local boards = workspace
+        :WaitForChild("IntermissionLobby")
+        :WaitForChild("Boards")
+
+    local maps = {}
+
+    for i = 1, 4 do
+        local board = boards:FindFirstChild("Board" .. i)
+
+        if board then
+            local title = board
+                :FindFirstChild("Hitboxes")
+                and board.Hitboxes:FindFirstChild("Bottom")
+                and board.Hitboxes.Bottom:FindFirstChild("MapDisplay")
+                and board.Hitboxes.Bottom.MapDisplay:FindFirstChild("Title")
+
+            if title then
+                maps[i] = title.Text
+                
+            end
+        end
+    end
+
+    return maps
+end
+
+local function FindTargetMap(targetMaps)
+    local maps = GetLobbyBoardMaps()
+
+    for _, mapName in pairs(maps) do
+        if targetMaps[mapName] then
+            return mapName
+        end
+    end
+
+    return nil
+end
+
+local VIP_MAP_GAMEPASS_ID = 10518590
+
+local function CanOverrideMap()
+    local ownsPass = false
+
+    pcall(function()
+        ownsPass = MarketplaceService:UserOwnsGamePassAsync(
+            plr.UserId,
+            VIP_MAP_GAMEPASS_ID
+        ) == true
+    end)
+
+    if ownsPass then
+        return true
+    end
+
+    local stateReplicators = ReplicatedStorage:FindFirstChild("StateReplicators")
+    local gameStateReplicator = stateReplicators
+        and stateReplicators:FindFirstChild("GameStateReplicator")
+
+    return gameStateReplicator
+        and gameStateReplicator:GetAttribute("IsPrivateServer") == true
+        or false
+end
+
+local function GetAnyTargetMap(targetMaps)
+    for mapName in pairs(targetMaps) do
+        return mapName
+    end
+
+    return nil
+end
+
+local function WaitForTargetMapWithFallback(targetMaps, difficulty)
+    local RemoteEvent = ReplicatedStorage:WaitForChild("RemoteEvent")
+    local RemoteFunction = ReplicatedStorage:WaitForChild("RemoteFunction")
+
+    local selectedMap = FindTargetMap(targetMaps)
+
+    if selectedMap then
+        
+        return selectedMap
+    end
+
+    if CanOverrideMap() then
+        selectedMap = GetAnyTargetMap(targetMaps)
+
+        if selectedMap then
+            
+            return selectedMap
+        end
+    end
+
+    
+
+    RemoteEvent:FireServer(
+        "LobbyVoting",
+        "Veto"
+    )
+
+    task.wait(2)
+
+    selectedMap = FindTargetMap(targetMaps)
+
+    if selectedMap then
+        
+        return selectedMap
+    end
+
+    
+
+    RemoteFunction:InvokeServer(
+        "Multiplayer",
+        "v2:start",
+        {
+            difficulty = difficulty,
+            mode = "survival",
+            count = 1
+        }
+    )
+
+    return nil
+end
+
+local function GetProgressModeName(level)
+    level = tonumber(level) or 0
+
+    if level >= 175 then
+        return "Molten"
+    elseif level >= 50 then
+        return "Hardcore"
+    elseif level >= 15 then
+        return "Molten"
+    end
+
+    return "Easy"
+end
+
+local function GetCurrentDifficulty()
+    local stateReplicators =
+        ReplicatedStorage:FindFirstChild("StateReplicators")
+
+    local rep =
+        stateReplicators
+        and stateReplicators:FindFirstChild("GameStateReplicator")
+
+    if not rep then
+        return nil
+    end
+
+    local difficulty = rep:GetAttribute("DifficultyDisplayName")
+
+    if difficulty == nil then
+        return nil
+    end
+
+    return tostring(difficulty)
+end
+
+local function StartMatchmaking(difficulty, mode)
+    local RemoteFunction = ReplicatedStorage:WaitForChild("RemoteFunction")
+
+    local matchmakingName =
+        mode == "hardcore" and "Hardcore" or difficulty
+
+    statusDisplay.Text =
+        "Status: Matchmaking " .. matchmakingName
+
+    local success, result = pcall(function()
+        return RemoteFunction:InvokeServer(
+            "Multiplayer",
+            "v2:start",
+            {
+                difficulty = difficulty,
+                mode = mode,
+                count = 1
+            }
+        )
+    end)
+
+    if not success then
+        warn("Failed to start matchmaking:", result)
+        return false
+    end
+
+    return true
+end
+
+local re = ReplicatedStorage:WaitForChild("RemoteEvent")
+
+local function GetDirectStateReplicators()
+    return ReplicatedStorage:FindFirstChild("StateReplicators")
+end
+
+local function GetDirectGameStateReplicator()
+    local stateReplicators = GetDirectStateReplicators()
+    return stateReplicators and stateReplicators:FindFirstChild("GameStateReplicator")
+end
+
+local function GetDirectVoteReplicator()
+    local stateReplicators = GetDirectStateReplicators()
+    return stateReplicators and stateReplicators:FindFirstChild("VoteReplicator")
+end
+
+local function GetDirectTowersFolder()
+    return workspace:FindFirstChild("Towers")
+end
+
+local MAP_VOTE_POSITION = Vector3.new(12.59, 10.64, 52.01)
+
+local TDS = {
+    PlacedTowers = {}
+}
+
+TDS.placed_towers = TDS.PlacedTowers
+
+local CurrentStrategyRunner = nil
+local CurrentStrategyName = nil
+
+shared.TDSTable = TDS
+shared["TDS_Table"] = TDS
+
+function TDS:ResetIndex()
+    self.PlacedTowers = {}
+    self.placed_towers = self.PlacedTowers
+    
+end
+
+function TDS:Place(towerName, x, y, z, ...)
+    local args = {...}
+    local isStacking =
+        args[#args] == true
+        or args[#args] == "stack"
+
+    local position = Vector3.new(x, y, z)
+
+    if isStacking then
+        local rayParams = RaycastParams.new()
+        rayParams.FilterType = Enum.RaycastFilterType.Exclude
+
+        local ignore = {}
+        local towersFolder = workspace:FindFirstChild("Towers")
+
+        if towersFolder then
+            table.insert(ignore, towersFolder)
+        end
+
+        if plr.Character then
+            table.insert(ignore, plr.Character)
+        end
+
+        rayParams.FilterDescendantsInstances = ignore
+
+        local hit = workspace:Raycast(
+            Vector3.new(x, y + 200, z),
+            Vector3.new(0, -1000, 0),
+            rayParams
+        )
+
+        if not hit then
+            warn("[STACKER] No surface found:", towerName, x, y, z)
+            return false
+        end
+
+        position = Vector3.new(
+            x,
+            hit.Position.Y + 25,
+            z
+        )
+
+        return rf:InvokeServer(
+            "Troops",
+            "Place",
+            {
+                Rotation = CFrame.new(),
+                Position = position
+            },
+            towerName
+        )
+    end
+
+    return rf:InvokeServer(
+        "Troops",
+        "Place",
+        {
+            Rotation = CFrame.new(),
+            Position = position
+        },
+        towerName,
+        ...
+    )
+end
+
+local function DirectResponseOK(result)
+    if result == true then
+        return true
+    end
+
+    if type(result) == "table" and result.Success == true then
+        return true
+    end
+
+    local ok, isModel = pcall(function()
+        return result and result:IsA("Model")
+    end)
+
+    if ok and isModel then
+        return true
+    end
+
+    if type(result) == "userdata" then
+        return true
+    end
+
+    return false
+end
+
+local function DirectGetPlayerReplicator()
+    local stateReplicators = GetDirectStateReplicators()
+
+    if not stateReplicators then
+        return nil
+    end
+
+    for _, folder in ipairs(stateReplicators:GetChildren()) do
+        if folder.Name == "PlayerReplicator"
+            and folder:GetAttribute("UserId") == plr.UserId then
+
+            return folder
+        end
+    end
+
+    return nil
+end
+
+local function DirectSetLoadout(...)
+    local requested = {...}
+    local playerReplicator
+
+    repeat
+        local gameStateReplicator = GetDirectGameStateReplicator()
+
+        if gameStateReplicator
+            and gameStateReplicator:GetAttribute("GameOver") == true then
+            return false
+        end
+
+        playerReplicator = DirectGetPlayerReplicator()
+        task.wait(0.1)
+    until playerReplicator
+
+    local currentlyEquipped = {}
+    local equipped = playerReplicator:GetAttribute("EquippedTowers")
+
+    if type(equipped) == "string" then
+        local json = equipped:match("%[.*%]")
+
+        if json then
+            pcall(function()
+                currentlyEquipped = HttpService:JSONDecode(json)
+            end)
+        end
+    end
+
+    for _, towerName in ipairs(currentlyEquipped) do
+        if towerName and towerName ~= "None" then
+            re:FireServer(
+                "Inventory",
+                "Unequip",
+                "Tower",
+                towerName
+            )
+            task.wait(0.3)
+        end
+    end
+
+    task.wait(0.5)
+
+    for _, towerName in ipairs(requested) do
+        if towerName
+            and towerName ~= ""
+            and towerName ~= "None" then
+
+            re:FireServer(
+                "Inventory",
+                "Equip",
+                "Tower",
+                towerName
+            )
+            task.wait(0.3)
+        end
+    end
+
+    task.wait(0.5)
+    return true
+end
+
+local function DirectSelectMap(mapName)
+    if CanOverrideMap() then
+        local ok, result = pcall(function()
+            return rf:InvokeServer(
+                "LobbyVoting",
+                "Override",
+                mapName
+            )
+        end)
+
+        if ok then
+            
+        else
+            warn("[VIP MAP] Override failed:", result)
+        end
+
+        task.wait(3)
+    end
+
+    re:FireServer(
+        "LobbyVoting",
+        "Vote",
+        mapName,
+        MAP_VOTE_POSITION
+    )
+
+    task.wait(1)
+
+    re:FireServer(
+        "LobbyVoting",
+        "Ready"
+    )
+
+    return true
+end
+
+local function DirectReady()
+    local gameStateReplicator = GetDirectGameStateReplicator()
+    local voteReplicator = GetDirectVoteReplicator()
+
+    if not gameStateReplicator or not voteReplicator then
+        warn("[READY] Replicators missing")
+        return false
+    end
+
+    if gameStateReplicator:GetAttribute("GameStarted") == true then
+        return true
+    end
+
+    repeat
+        if gameStateReplicator:GetAttribute("GameOver") == true then
+            return false
+        end
+
+        task.wait(0.1)
+    until (
+        voteReplicator:GetAttribute("Enabled") == true
+        and voteReplicator:GetAttribute("Title") == "Ready?"
+    ) or gameStateReplicator:GetAttribute("GameStarted") == true
+
+    if gameStateReplicator:GetAttribute("GameStarted") ~= true then
+        pcall(function()
+            rf:InvokeServer("Voting", "Skip")
+        end)
+    end
+
+    repeat
+        if gameStateReplicator:GetAttribute("GameOver") == true then
+            return false
+        end
+
+        task.wait(0.1)
+    until gameStateReplicator:GetAttribute("GameStarted") == true
+
+    return true
+end
+
+local function DirectGetOwnedTowers()
+    local found = {}
+    local towersFolder = GetDirectTowersFolder()
+
+    if not towersFolder then
+        return found
+    end
+
+    for _, tower in ipairs(towersFolder:GetChildren()) do
+        local owner = tower:FindFirstChild("Owner")
+
+        if owner and owner.Value == plr.UserId then
+            found[tower] = true
+        end
+    end
+
+    return found
+end
+
+local function DirectPlaceTower(towerName, position)
+    while AutoProgression do
+        local gameStateReplicator = GetDirectGameStateReplicator()
+        local towersFolder = GetDirectTowersFolder()
+
+        if not gameStateReplicator or not towersFolder then
+            task.wait(0.05)
+            continue
+        end
+
+        if gameStateReplicator:GetAttribute("GameOver") == true then
+            return false
+        end
+
+        local before = DirectGetOwnedTowers()
+        local newTower = nil
+        local connection
+
+        connection = towersFolder.ChildAdded:Connect(function(tower)
+            task.spawn(function()
+                local owner = tower:FindFirstChild("Owner") or tower:WaitForChild("Owner", 2)
+
+                if owner and owner.Value == plr.UserId and not newTower then
+                    newTower = tower
+                end
+            end)
+        end)
+
+        local ok, err = pcall(function()
+            TDS:Place(
+                towerName,
+                position.X,
+                position.Y,
+                position.Z,
+                true
+            )
+        end)
+
+        if not ok then
+            if connection then
+                connection:Disconnect()
+            end
+
+            warn("[PLACE] Error:", err)
+            task.wait(0.05)
+            continue
+        end
+
+        local timeoutAt = os.clock() + 2
+
+        repeat
+            if gameStateReplicator:GetAttribute("GameOver") == true then
+                if connection then
+                    connection:Disconnect()
+                end
+
+                return false
+            end
+
+            if not newTower then
+                for _, tower in ipairs(towersFolder:GetChildren()) do
+                    if not before[tower] then
+                        local owner = tower:FindFirstChild("Owner")
+
+                        if owner and owner.Value == plr.UserId then
+                            newTower = tower
+                            break
+                        end
+                    end
+                end
+            end
+
+            if newTower then
+                break
+            end
+
+            task.wait(0.01)
+        until os.clock() >= timeoutAt
+
+        if connection then
+            connection:Disconnect()
+        end
+
+        if newTower then
+            table.insert(TDS.PlacedTowers, newTower)
+            
+            return true
+        end
+
+        task.wait(0.05)
+    end
+
+    return false
+end
+
+local function DirectUpgradeTower(index, path)
+    local tower = TDS.PlacedTowers[index]
+
+    if not tower or not tower.Parent then
+        warn("[UPGRADE] Missing tower index:", index)
+        return false
+    end
+
+    while AutoProgression do
+        local gameStateReplicator = GetDirectGameStateReplicator()
+
+        if gameStateReplicator
+            and gameStateReplicator:GetAttribute("GameOver") == true then
+            return false
+        end
+
+        local ok, result = pcall(function()
+            return rf:InvokeServer(
+                "Troops",
+                "Upgrade",
+                "Set",
+                {
+                    Troop = tower,
+                    Path = path or 1
+                }
+            )
+        end)
+
+        if ok and DirectResponseOK(result) then
+            return true
+        end
+
+        task.wait(0.25)
+    end
+
+    return false
+end
+
+local function DirectSellTower(index)
+    local tower = TDS.PlacedTowers[index]
+
+    if not tower or not tower.Parent then
+        return false
+    end
+
+    while AutoProgression do
+        local gameStateReplicator = GetDirectGameStateReplicator()
+
+        if gameStateReplicator
+            and gameStateReplicator:GetAttribute("GameOver") == true then
+            return false
+        end
+
+        local ok, result = pcall(function()
+            return rf:InvokeServer(
+                "Troops",
+                "Sell",
+                {
+                    Troop = tower
+                }
+            )
+        end)
+
+        if ok and DirectResponseOK(result) then
+            return true
+        end
+
+        task.wait(0.25)
+    end
+
+    return false
+end
+
+local function DirectGetCurrentWave()
+    local label
+
+    repeat
+        local gameStateReplicator = GetDirectGameStateReplicator()
+
+        if gameStateReplicator
+            and gameStateReplicator:GetAttribute("GameOver") == true then
+            return nil
+        end
+
+        task.wait(0.2)
+
+        local guiObject = PlayerGui:FindFirstChild("ReactGameTopGameDisplay")
+        local frameObject = guiObject and guiObject:FindFirstChild("Frame")
+        local waveObject = frameObject and frameObject:FindFirstChild("wave")
+        local container = waveObject and waveObject:FindFirstChild("container")
+
+        label = container and container:FindFirstChild("value")
+    until label
+
+    return tonumber(label.Text:match("(%d+)")) or 0
+end
+
+local function DirectWaitForWave(target)
+    while AutoProgression do
+        local gameStateReplicator = GetDirectGameStateReplicator()
+
+        if gameStateReplicator
+            and gameStateReplicator:GetAttribute("GameOver") == true then
+            return false
+        end
+
+        local currentWave = DirectGetCurrentWave()
+
+        if currentWave and currentWave >= target then
+            return true
+        end
+
+        task.wait(0.25)
+    end
+
+    return false
+end
+
+local DirectAutoSkipRunning = false
+
+local function StartDirectAutoSkip()
+    if DirectAutoSkipRunning then
+        return
+    end
+
+    DirectAutoSkipRunning = true
+
+    task.spawn(function()
+        while true do
+            local gameStateReplicator = GetDirectGameStateReplicator()
+
+            if AutoProgression
+                and IsInGame()
+                and GetStoryMissionName() == nil
+                and gameStateReplicator
+                and gameStateReplicator:GetAttribute("GameOver") ~= true then
+
+                local voteGui = PlayerGui:FindFirstChild("ReactOverridesVote")
+                local frameObject = voteGui and voteGui:FindFirstChild("Frame")
+                local votes = frameObject and frameObject:FindFirstChild("votes")
+                local voteButton = votes and votes:FindFirstChild("vote")
+
+                if voteButton
+                    and voteButton.Position == UDim2.new(0.5, 0, 0.5, 0) then
+
+                    pcall(function()
+                        rf:InvokeServer("Voting", "Skip")
+                    end)
+
+                    task.wait(0.5)
+                else
+                    task.wait(0.1)
+                end
+            else
+                task.wait(0.2)
+            end
+        end
+
+        DirectAutoSkipRunning = false
+    end)
+end
+
+local function PrepareDirectStrategy(mapName, ...)
+    local loadout = {...}
+
+    if not DirectSetLoadout(unpack(loadout)) then
+        return false
+    end
+
+    DirectSelectMap(mapName)
+
+    StartDirectAutoSkip()
+    return true
+end
+
+local function PrepareDirectWinStrategy(mapName, ...)
+    local loadout = {...}
+
+    if not DirectSetLoadout(unpack(loadout)) then
+        return false
+    end
+
+    DirectSelectMap(mapName)
+    return true
+end
+
+local function StartDirectSelectiveSkip(skipWaves)
+    task.spawn(function()
+        while AutoProgression do
+            local gameStateReplicator = GetDirectGameStateReplicator()
+
+            if not gameStateReplicator
+                or gameStateReplicator:GetAttribute("GameOver") == true then
+                task.wait(0.2)
+                continue
+            end
+
+            local currentWave = DirectGetCurrentWave()
+
+            if currentWave and skipWaves[currentWave] then
+                local voteGui = PlayerGui:FindFirstChild("ReactOverridesVote")
+                local frameObject = voteGui and voteGui:FindFirstChild("Frame")
+                local votes = frameObject and frameObject:FindFirstChild("votes")
+                local voteButton = votes and votes:FindFirstChild("vote")
+
+                if voteButton
+                    and voteButton.Position == UDim2.new(0.5, 0, 0.5, 0) then
+
+                    pcall(function()
+                        rf:InvokeServer("Voting", "Skip")
+                    end)
+
+                    task.wait(0.5)
+                else
+                    task.wait(0.1)
+                end
+            else
+                task.wait(0.1)
+            end
+        end
+    end)
+end
+
+local function RunMasonArchWinActions()
+    local pos1 = Vector3.new(3.2863388061523438, 1.3999929428100586, 43.2757568359375)
+    local pos2 = Vector3.new(-3.5389223098754883, 1.3999929428100586, 43.31703186035156)
+
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectReady() then return false end
+
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 1, 6 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 7, 12 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    for tower = 1, 12 do
+        if not DirectUpgradeTower(tower, 1) then return false end
+    end
+
+    return true
+end
+
+local function RunGildedPathWinActions()
+    local pos = Vector3.new(3.59195613861084, 0.9423162937164307, 4.463804244995117)
+
+    if not DirectPlaceTower("Soldier", pos) then return false end
+    if not DirectReady() then return false end
+
+    for i = 2, 6 do
+        if not DirectPlaceTower("Soldier", pos) then return false end
+    end
+
+    for level = 1, 3 do
+        for tower = 1, 6 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    for i = 7, 12 do
+        if not DirectPlaceTower("Soldier", pos) then return false end
+    end
+
+    for level = 1, 3 do
+        for tower = 7, 12 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    for tower = 1, 12 do
+        if not DirectUpgradeTower(tower, 1) then return false end
+    end
+
+    return true
+end
+
+local function RunDeadAheadWinActions()
+    local pos1 = Vector3.new(-5.48541784286499, 1.0000032186508179, -19.94550323486328)
+    local pos2 = Vector3.new(1.0064239501953125, 1.0000032186508179, -19.93537712097168)
+
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectReady() then return false end
+
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 1, 6 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 7, 12 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    for tower = 1, 12 do
+        if not DirectUpgradeTower(tower, 1) then return false end
+    end
+
+    return true
+end
+
+local function RunLayByWinActions()
+    local pos1 = Vector3.new(-3.2727174758911133, 242.99998474121094, 266.5193786621094)
+    local pos2 = Vector3.new(3.2822628021240234, 242.99998474121094, 266.73028564453125)
+
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectReady() then return false end
+
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 1, 6 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 7, 12 do
+            if not DirectUpgradeTower(tower, 1) then return false end
+        end
+    end
+
+    for tower = 1, 12 do
+        if not DirectUpgradeTower(tower, 1) then return false end
+    end
+
+    return true
+end
+
+local function RunBlackSpotExchangeWinActions()
+    local pos1 = Vector3.new(-6.146278381347656, 1.9991352558135986, 2.760941505432129)
+    local pos2 = Vector3.new(6.282851696014404, 1.9991353750228882, 2.092632293701172)
+
+    if not DirectPlaceTower("Soldier", pos1) then
+        return false
+    end
+
+    if not DirectReady() then
+        return false
+    end
+
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 1, 6 do
+            if not DirectUpgradeTower(tower, 1) then
+                return false
+            end
+        end
+    end
+
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+    if not DirectPlaceTower("Soldier", pos1) then return false end
+    if not DirectPlaceTower("Soldier", pos2) then return false end
+
+    for level = 1, 3 do
+        for tower = 7, 12 do
+            if not DirectUpgradeTower(tower, 1) then
+                return false
+            end
+        end
+    end
+
+    for tower = 1, 12 do
+        if not DirectUpgradeTower(tower, 1) then
+            return false
+        end
+    end
+
+    return true
+end
+
+local function RunWinEasyMap()
+    local targetMaps = {
+        ["Black Spot Exchange"] = true,
+        ["Mason Arch"] = true,
+        ["Gilded Path"] = true,
+        ["Dead Ahead"] = true,
+        ["Lay By"] = true
+    }
+
+    if game.PlaceId == LOBBY_PLACE_ID then
+        return StartMatchmaking("Easy", "survival")
+    end
+
+    local selectedMap = WaitForTargetMapWithFallback(targetMaps, "Easy")
+
+    if not selectedMap then
+        return false
+    end
+
+    if not PrepareDirectWinStrategy(selectedMap, "Soldier", "None", "None", "None", "None") then
+        return false
+    end
+
+    if selectedMap == "Black Spot Exchange" then
+        StartDirectAutoSkip()
+        CurrentStrategyName = "Win / Easy / Black Spot Exchange"
+        CurrentStrategyRunner = RunBlackSpotExchangeWinActions
+    elseif selectedMap == "Mason Arch" then
+        local skipWaves = {}
+        for wave = 1, 13 do
+            skipWaves[wave] = true
+        end
+        for wave = 15, 19 do
+            skipWaves[wave] = true
+        end
+
+        StartDirectSelectiveSkip(skipWaves)
+        CurrentStrategyName = "Win / Easy / Mason Arch"
+        CurrentStrategyRunner = RunMasonArchWinActions
+    elseif selectedMap == "Gilded Path" then
+        local skipWaves = {}
+        for wave = 1, 13 do
+            skipWaves[wave] = true
+        end
+        skipWaves[16] = true
+        skipWaves[17] = true
+
+        StartDirectSelectiveSkip(skipWaves)
+        CurrentStrategyName = "Win / Easy / Gilded Path"
+        CurrentStrategyRunner = RunGildedPathWinActions
+    elseif selectedMap == "Dead Ahead" then
+        StartDirectAutoSkip()
+        CurrentStrategyName = "Win / Easy / Dead Ahead"
+        CurrentStrategyRunner = RunDeadAheadWinActions
+    elseif selectedMap == "Lay By" then
+        StartDirectAutoSkip()
+        CurrentStrategyName = "Win / Easy / Lay By"
+        CurrentStrategyRunner = RunLayByWinActions
+    else
+        return false
+    end
+
+    statusDisplay.Text = "Status: " .. CurrentStrategyName
+    StartMatchTimeout()
+    return CurrentStrategyRunner()
+end
+
+local function RunEasyScoutActions(position)
+    for i = 1, 4 do
+        if not DirectPlaceTower("Scout", position) then
+            return false
+        end
+    end
+
+    if not DirectReady() then
+        return false
+    end
+
+    for i = 5, 10 do
+        if not DirectPlaceTower("Scout", position) then
+            return false
+        end
+    end
+
+    for level = 1, 4 do
+        for tower = 1, 10 do
+            if not DirectUpgradeTower(tower, 1) then
+                return false
+            end
+        end
+    end
+
+    if not DirectWaitForWave(19) then
+        return false
+    end
+
+    task.wait(5)
+
+    local gameStateReplicator = GetDirectGameStateReplicator()
+
+    if gameStateReplicator
+        and gameStateReplicator:GetAttribute("GameOver") == true then
+        return false
+    end
+
+    for tower = 1, 10 do
+        DirectSellTower(tower)
+    end
+
+    return true
+end
+
+local function RunEasyScoutStrategy(mapName, position)
+    if not PrepareDirectStrategy(mapName, "Scout", "None", "None", "None", "None") then
+        return false
+    end
+
+    CurrentStrategyName = "Easy / " .. mapName
+    CurrentStrategyRunner = function()
+        return RunEasyScoutActions(position)
+    end
+
+    return CurrentStrategyRunner()
+end
+
+local function RunMoltenSoldierActions(position)
+    if not DirectPlaceTower("Soldier", position) then
+        return false
+    end
+
+    if not DirectReady() then
+        return false
+    end
+
+    for i = 2, 5 do
+        if not DirectPlaceTower("Soldier", position) then
+            return false
+        end
+    end
+
+    for level = 1, 3 do
+        for tower = 1, 5 do
+            if not DirectUpgradeTower(tower, 1) then
+                return false
+            end
+        end
+    end
+
+    for i = 6, 10 do
+        if not DirectPlaceTower("Soldier", position) then
+            return false
+        end
+    end
+
+    for level = 1, 3 do
+        for tower = 6, 10 do
+            if not DirectUpgradeTower(tower, 1) then
+                return false
+            end
+        end
+    end
+
+    for tower = 1, 10 do
+        if not DirectUpgradeTower(tower, 1) then
+            return false
+        end
+    end
+
+    for i = 11, 20 do
+        if not DirectPlaceTower("Soldier", position) then
+            return false
+        end
+    end
+
+    for level = 1, 4 do
+        for tower = 11, 20 do
+            if not DirectUpgradeTower(tower, 1) then
+                return false
+            end
+        end
+    end
+
+    return true
+end
+
+local function RunMoltenSoldierStrategy(mapName, position)
+    if not PrepareDirectStrategy(mapName, "Soldier", "None", "None", "None", "None") then
+        return false
+    end
+
+    CurrentStrategyName = "Molten / " .. mapName
+    CurrentStrategyRunner = function()
+        return RunMoltenSoldierActions(position)
+    end
+
+    return CurrentStrategyRunner()
+end
+
+local function DirectSetTarget(index, targetType)
+    local tower = TDS.PlacedTowers[index]
+
+    if not tower or not tower.Parent then
+        warn("[TARGET] Missing tower index:", index)
+        return false
+    end
+
+    local ok, result = pcall(function()
+        return rf:InvokeServer(
+            "Troops",
+            "Target",
+            "Set",
+            {
+                Troop = tower,
+                Target = targetType
+            }
+        )
+    end)
+
+    return ok and result ~= false
+end
+
+local function RunEasy()
+    if runningEasy then
+        return
+    end
+
+    runningEasy = true
+    statusDisplay.Text = "Status: Grinding Easy"
+
+    if game.PlaceId == LOBBY_PLACE_ID then
+        StartMatchmaking("Easy", "survival")
+        runningEasy = false
+        return
+    end
+
+    local targetMaps = {
+        ["Meltdown"] = true,
+        ["Simplicity"] = true,
+        ["Stained Temple"] = true,
+        ["Midnight Issue"] = true,
+        ["Spring Fever"] = true
+    }
+
+    local selectedMap = WaitForTargetMapWithFallback(
+        targetMaps,
+        "Easy"
+    )
+
+    if not selectedMap then
+        runningEasy = false
+        return
+    end
+
+    local positions = {
+        ["Meltdown"] = Vector3.new(
+            -0.5842185020446777,
+            0.9999943375587463,
+            -19.732351303100586
+        ),
+
+        ["Simplicity"] = Vector3.new(
+            -9.6557102203369, 
+             0.99998462200165, 
+            -9.2791118621826
+        ),
+
+        ["Stained Temple"] = Vector3.new(
+            -0.7996654510498047,
+            -1.545204997062683,
+            -22.47845458984375
+        ),
+
+        ["Midnight Issue"] = Vector3.new(
+            25.008604049682617,
+            49.92744827270508,
+            -16.807720184326172
+        ),
+
+        ["Spring Fever"] = Vector3.new(
+            -5.293452262878418,
+            1.0229387283325195,
+            -22.20737075805664
+        )
+    }
+
+    local position = positions[selectedMap]
+
+    if position then
+        StartMatchTimeout()
+        RunEasyScoutStrategy(
+            selectedMap,
+            position
+        )
+    else
+        warn("No Easy strategy position for:", selectedMap)
+    end
+
+    runningEasy = false
+end
+
+local function RunMolten()
+    if runningMolten then
+        return
+    end
+
+    runningMolten = true
+    statusDisplay.Text = "Status: Grinding Molten"
+
+    if game.PlaceId == LOBBY_PLACE_ID then
+        StartMatchmaking("Molten", "survival")
+        runningMolten = false
+        return
+    end
+
+    local targetMaps = {
+        ["Wrecked Battlefield II"] = true,
+        ["Lighthaos"] = true,
+        ["Midnight Issue"] = true,
+        ["Nether"] = true
+    }
+
+    local selectedMap = WaitForTargetMapWithFallback(
+        targetMaps,
+        "Molten"
+    )
+
+    if not selectedMap then
+        runningMolten = false
+        return
+    end
+
+    local positions = {
+        ["Wrecked Battlefield II"] = Vector3.new(
+            -7.773489952087402,
+            0.25974321365356445,
+            3.157245635986328
+        ),
+
+        ["Lighthaos"] = Vector3.new(
+            -0.6217041015625,
+            0.978121280670166,
+            8.974184036254883
+        ),
+
+        ["Midnight Issue"] = Vector3.new(
+            22.40535545349121,
+            49.92741394042969,
+            -14.588787078857422
+        ),
+
+        ["Nether"] = Vector3.new(
+            -2.243180274963379,
+            0.9261236190795898,
+            4.131133556365967
+        )
+    }
+
+    local position = positions[selectedMap]
+
+    if position then
+        StartMatchTimeout()
+        RunMoltenSoldierStrategy(
+            selectedMap,
+            position
+        )
+    else
+        warn("No Molten strategy position for:", selectedMap)
+    end
+
+    runningMolten = false
+end
+
+local function GetHardcoreLobbyBoardMaps()
+    local lobby = workspace:FindFirstChild("HardcoreIntermissionLobby")
+    local boards = lobby and lobby:FindFirstChild("Boards")
+    if not boards then
+        return nil
+    end
+
+    local maps = {}
+
+    for i = 1, 4 do
+        local board = boards:FindFirstChild("Board" .. i)
+        if board then
+            local hitboxes = board:FindFirstChild("Hitboxes")
+            local bottom = hitboxes and hitboxes:FindFirstChild("Bottom")
+            local mapDisplay = bottom and bottom:FindFirstChild("MapDisplay")
+            local title = mapDisplay and mapDisplay:FindFirstChild("Title")
+
+            if title then
+                maps[i] = title.Text
+                
+            end
+        end
+    end
+
+    return maps
+end
+
+local function FindHardcoreTargetMap(targetMaps)
+    local maps = GetHardcoreLobbyBoardMaps()
+    if not maps then
+        return nil
+    end
+
+    for _, mapName in pairs(maps) do
+        if targetMaps[mapName] then
+            return mapName
+        end
+    end
+
+    return nil
+end
+
+local function RunHardcore()
+    if runningHardcore then
+        return
+    end
+
+    runningHardcore = true
+    statusDisplay.Text = "Status: Grinding Hardcore"
+
+    if game.PlaceId == LOBBY_PLACE_ID then
+        StartMatchmaking("Easy", "hardcore")
+        runningHardcore = false
+        return
+    end
+
+    local targetMaps = {
+        ["Wretched Front"] = true
+    }
+
+    local selectedMap = FindHardcoreTargetMap(targetMaps)
+
+    if not selectedMap and CanOverrideMap() then
+        selectedMap = GetAnyTargetMap(targetMaps)
+
+        if selectedMap then
+            
+        end
+    end
+
+    if not selectedMap then
+        re:FireServer("LobbyVoting", "Veto")
+        task.wait(2)
+        selectedMap = FindHardcoreTargetMap(targetMaps)
+    end
+
+    if not selectedMap then
+        runningHardcore = false
+        return
+    end
+
+    if not PrepareDirectStrategy(
+        selectedMap,
+        "Pyromancer",
+        "Hunter",
+        "Minigunner",
+        "EvolvedJuggernaut",
+        "None"
+    ) then
+        runningHardcore = false
+        return
+    end
+
+    local pyroPosition = Vector3.new(
+        -5.936307430267334,
+        0.9551397562026978,
+        -31.831748962402344
+    )
+
+    local hunterPosition = Vector3.new(
+        2.679039716720581,
+        1.341203212738037,
+        21.30302619934082
+    )
+
+    StartMatchTimeout()
+
+    CurrentStrategyName = "Hardcore / " .. selectedMap
+    CurrentStrategyRunner = function()
+        if not DirectPlaceTower("Pyromancer", pyroPosition) then
+            return false
+        end
+
+        if not DirectReady() then
+            return false
+        end
+
+        if not DirectSetTarget(1, "Farthest") then
+            return false
+        end
+
+        for i = 1, 4 do
+            if not DirectUpgradeTower(1, 1) then
+                return false
+            end
+        end
+
+        for i = 1, 9 do
+            if not DirectPlaceTower("Hunter", hunterPosition) then
+                return false
+            end
+        end
+
+        return true
+    end
+
+    CurrentStrategyRunner()
+    runningHardcore = false
+end
+
+local function GetLiveTDSLevel()
+    local function readNumber(obj)
+        local value = nil
+
+        pcall(function()
+            value = obj.ContentText
+        end)
+
+        if value == nil or tostring(value) == "" then
+            pcall(function()
+                value = obj.Text
+            end)
+        end
+
+        if value == nil or tostring(value) == "" then
+            pcall(function()
+                value = obj.Value
+            end)
+        end
+
+        local text = tostring(value or "")
+        local number = tonumber(text:match("%d+"))
+
+        if number and number >= 0 and number <= 1000 then
+            return number
+        end
+
+        return nil
+    end
+
+    for _, obj in ipairs(PlayerGui:GetDescendants()) do
+        local name = obj.Name:lower()
+
+        if name == "currentlevel" or name == "playerlevel" then
+            local level = readNumber(obj)
+
+            if level then
+                return level
+            end
+        end
+    end
+
+    local roots = {
+        PlayerGui:FindFirstChild("ReactLobbyHud"),
+        PlayerGui:FindFirstChild("ReactUniversalHotbar"),
+        PlayerGui:FindFirstChild("ReactGameNewRewards")
+    }
+
+    for _, root in ipairs(roots) do
+        if root then
+            for _, obj in ipairs(root:GetDescendants()) do
+                if obj:IsA("TextLabel") or obj:IsA("TextButton") or obj:IsA("TextBox") then
+                    local text = ""
+
+                    pcall(function()
+                        text = obj.ContentText or obj.Text or ""
+                    end)
+
+                    local level = tonumber(
+                        tostring(text):match("[Ll]evel%s*[:%-]?%s*(%d+)")
+                    )
+
+                    if level and level >= 0 and level <= 1000 then
+                        return level
+                    end
+                end
+            end
+        end
+    end
+
+    return nil
+end
+
+local function GetBestProgressionLevel()
+    if game.PlaceId == LOBBY_PLACE_ID then
+        local statLevel = GetStat("Level")
+
+        if statLevel ~= nil and statLevel >= 0 then
+            Settings.ProgressInitialized = true
+            Settings.SavedLevel = statLevel
+            Settings.InGameLevel = statLevel
+            SaveSettings()
+            return statLevel
+        end
+    end
+
+    local liveLevel = GetLiveTDSLevel()
+
+    if liveLevel ~= nil and liveLevel >= 0 then
+        Settings.ProgressInitialized = true
+        Settings.SavedLevel = liveLevel
+        Settings.InGameLevel = liveLevel
+        SaveSettings()
+        return liveLevel
+    end
+
+    local statLevel = GetStat("Level")
+
+    if statLevel ~= nil and statLevel >= 0 then
+        return statLevel
+    end
+
+    return tonumber(Settings.SavedLevel) or 0
+end
+
+local function RouteProgressionByLevel(level, directMatchmaking)
+    level = tonumber(level) or 0
+
+    if IsWinStrategy() then
+        if level >= 175 and game.PlaceId == LOBBY_PLACE_ID then
+            if IsTowerOwned(GATLING_TOWER) then
+                Settings.GatlingUnlocked = true
+                AutoProgression = false
+                Settings.AutoProgression = false
+                targetDisplay.Text = "Target: Completed"
+                SaveSettings()
+                UpdateToggleAppearance()
+                return false
+            end
+
+            local coins = tonumber(GetStat("Coins")) or 0
+            CurrentTrackedCoins = coins
+
+            if coins >= GATLING_PRICE then
+                statusDisplay.Text = "Status: Buying Gatling Gun..."
+                targetDisplay.Text = "Target: Gatling Gun"
+                BuyTowerIfNeeded(GATLING_TOWER)
+                task.wait(1)
+
+                if IsTowerOwned(GATLING_TOWER) then
+                    Settings.GatlingUnlocked = true
+                    AutoProgression = false
+                    Settings.AutoProgression = false
+                    targetDisplay.Text = "Target: Completed"
+                    SaveSettings()
+                    UpdateToggleAppearance()
+                    return false
+                end
+            end
+        end
+
+        if game.PlaceId == LOBBY_PLACE_ID then
+            statusDisplay.Text = "Status: Checking Soldier..."
+
+            if not IsTowerOwned("Soldier") then
+                statusDisplay.Text = "Status: Buying Soldier..."
+                BuyTowerIfNeeded("Soldier")
+                task.wait(1)
+
+                if not IsTowerOwned("Soldier") then
+                    warn("[WIN] Soldier is still not owned after purchase attempt")
+                    return false
+                end
+            end
+        end
+
+        if not AutoProgression then
+            return false
+        end
+
+        statusDisplay.Text = "Status: Win - Easy Map Pool"
+
+        if directMatchmaking then
+            return StartMatchmaking("Easy", "survival")
+        end
+
+        return RunWinEasyMap()
+    end
+
+    if level >= 175 then
+        if game.PlaceId == LOBBY_PLACE_ID then
+            if IsTowerOwned(GATLING_TOWER) then
+                Settings.GatlingUnlocked = true
+                AutoProgression = false
+                Settings.AutoProgression = false
+                targetDisplay.Text = "Target: Completed"
+
+                SaveSettings()
+                UpdateToggleAppearance()
+                return false
+            end
+
+            local coins = tonumber(GetStat("Coins")) or 0
+            CurrentTrackedCoins = coins
+
+            if coins >= GATLING_PRICE then
+                statusDisplay.Text = "Status: Buying Gatling Gun..."
+                targetDisplay.Text = "Target: Gatling Gun"
+
+                BuyTowerIfNeeded(GATLING_TOWER)
+                task.wait(1)
+
+                if IsTowerOwned(GATLING_TOWER) then
+                    Settings.GatlingUnlocked = true
+                    AutoProgression = false
+                    Settings.AutoProgression = false
+                    targetDisplay.Text = "Target: Completed"
+
+                    SaveSettings()
+                    UpdateToggleAppearance()
+                    return false
+                end
+            end
+
+            statusDisplay.Text = string.format(
+                "Status: Grinding Coins (%d / %d)",
+                coins,
+                GATLING_PRICE
+            )
+            targetDisplay.Text = "Target: Gatling Gun"
+
+            BuyTowerIfNeeded("Soldier")
+            task.wait(1)
+
+            if not AutoProgression then
+                return false
+            end
+
+            if directMatchmaking then
+                return StartMatchmaking("Molten", "survival")
+            end
+
+            RunMolten()
+            return true
+        end
+
+        local trackedCoins = GetTrackedCoins()
+
+        statusDisplay.Text = string.format(
+            "Status: Grinding Coins (%d / %d)",
+            trackedCoins,
+            GATLING_PRICE
+        )
+        targetDisplay.Text = "Target: Gatling Gun"
+
+        if trackedCoins >= GATLING_PRICE then
+            statusDisplay.Text = "Status: Returning to Lobby for Gatling..."
+            BackToLobby()
+            return true
+        end
+
+        if directMatchmaking then
+            return StartMatchmaking("Molten", "survival")
+        end
+
+        RunMolten()
+        return true
+    end
+
+    if level >= 50 then
+        BuyTowerIfNeeded("Pyromancer")
+        task.wait(1)
+
+        BuyTowerIfNeeded("Hunter")
+        task.wait(1)
+
+        if not AutoProgression then
+            return false
+        end
+
+        if directMatchmaking then
+            return StartMatchmaking("Easy", "hardcore")
+        end
+
+        RunHardcore()
+        return true
+    end
+
+    if level >= 15 then
+        BuyTowerIfNeeded("Soldier")
+        task.wait(1)
+
+        if not AutoProgression then
+            return false
+        end
+
+        if directMatchmaking then
+            return StartMatchmaking("Molten", "survival")
+        end
+
+        RunMolten()
+        return true
+    end
+
+    if not AutoProgression then
+        return false
+    end
+
+    if directMatchmaking then
+        return StartMatchmaking("Easy", "survival")
+    end
+
+    RunEasy()
+    return true
+end
+
+local function RunAutoProgression()
+    if running or not AutoProgression then
+        return
+    end
+
+    running = true
+
+    WaitUntilLoaded()
+    task.wait(1)
+
+    if game.PlaceId == LOBBY_PLACE_ID then
+        ResetProgressDataForLobby()
+        gameStateDisplay.Text = "Location: Lobby"
+
+        if Settings.Chapter0Completed ~= true then
+            statusDisplay.Text = "Status: Checking Story..."
+
+            local handled = RunChapter0Progression()
+
+            local storyCheckedLevel = GetStat("Level")
+            if storyCheckedLevel ~= nil and storyCheckedLevel >= 0 then
+                levelDisplay.Text = string.format(
+                    "Current Level: %d",
+                    storyCheckedLevel
+                )
+
+                local targetLevel = GetTargetLevel(storyCheckedLevel)
+
+                if targetLevel then
+                    targetDisplay.Text = string.format(
+                        "Target: Level %d",
+                        targetLevel
+                    )
+                elseif storyCheckedLevel >= 175 and AutoProgression then
+                    targetDisplay.Text = "Target: Gatling Gun"
+                else
+                    targetDisplay.Text = "Target: Completed"
+                end
+            end
+
+            if handled ~= false then
+                running = false
+                return
+            end
+        end
+
+        statusDisplay.Text = "Progress Loading..."
+        task.wait(5)
+
+        local saved
+        local level
+        local attempts = 0
+
+        repeat
+            attempts += 1
+            saved, level = SaveLobbyProgress()
+
+            if not saved and AutoProgression then
+                statusDisplay.Text = "Status: Retrying level..."
+                task.wait(0.5)
+            end
+        until saved
+            or not AutoProgression
+            or attempts >= 10
+
+        if not AutoProgression then
+            running = false
+            return
+        end
+
+        if not saved then
+            statusDisplay.Text = "Status: Failed to load level"
+            warn("Failed to load lobby level after 10 attempts.")
+            running = false
+            return
+        end
+
+        levelDisplay.Text = string.format(
+            "Current Level: %d",
+            level
+        )
+
+        local targetLevel = GetTargetLevel(level)
+
+        if targetLevel then
+            targetDisplay.Text = string.format(
+                "Target: Level %d",
+                targetLevel
+            )
+        elseif level >= 175 and AutoProgression then
+            targetDisplay.Text = "Target: Gatling Gun"
+        else
+            targetDisplay.Text = "Target: Completed"
+        end
+
+        task.wait(0.5)
+    else
+        if Settings.Chapter0Completed ~= true then
+            local handled = RunChapter0Progression()
+
+            if handled ~= false then
+                running = false
+                return
+            end
+        end
+    end
+
+    if not AutoProgression then
+        running = false
+        return
+    end
+
+    local level = GetBestProgressionLevel()
+
+    if level >= 0 then
+        levelDisplay.Text = string.format(
+            "Current Level: %d",
+            level
+        )
+
+        local targetLevel = GetTargetLevel(level)
+
+        if targetLevel then
+            targetDisplay.Text = string.format(
+                "Target: Level %d",
+                targetLevel
+            )
+        elseif level >= 175 and AutoProgression then
+            targetDisplay.Text = "Target: Gatling Gun"
+        else
+            targetDisplay.Text = "Target: Completed"
+        end
+    end
+
+    if IsInGame() then
+        local expectedDifficulty = IsWinStrategy() and "Easy" or GetProgressModeName(level)
+        local currentDifficulty = GetCurrentDifficulty()
+
+        if expectedDifficulty ~= "Completed" then
+            if not currentDifficulty then
+                statusDisplay.Text = "Status: Detecting Difficulty..."
+                running = false
+                return
+            end
+
+            if currentDifficulty ~= expectedDifficulty then
+                statusDisplay.Text = string.format(
+                    "Status: Wrong Difficulty (%s / %s)",
+                    currentDifficulty,
+                    expectedDifficulty
+                )
+                running = false
+                return
+            end
+        end
+    end
+
+    RouteProgressionByLevel(level, false)
+
+    running = false
+end
+
+local AutoProgress = {}
+
+function AutoProgress.Start()
+    if AutoProgression then
+        return true
+    end
+
+    AutoProgression = true
+    Settings.AutoProgression = true
+
+    if (tonumber(Settings.RunStartedAt) or 0) <= 0 then
+        Settings.RunStartedAt = os.time()
+    end
+
+    SaveSettings()
+    UpdateToggleAppearance()
+
+    task.spawn(RunAutoProgression)
+    return true
+end
+
+function AutoProgress.Stop()
+    AutoProgression = false
+    Settings.AutoProgression = false
+    Settings.RunStartedAt = 0
+
+    ResetMatchTimeout()
+
+    running = false
+    runningEasy = false
+    runningMolten = false
+    runningHardcore = false
+    wrongDifficultyMatchmakingRunning = false
+
+    SaveSettings()
+    UpdateToggleAppearance()
+
+    if IsInGame() then
+        task.spawn(function()
+            
+            BackToLobby()
+        end)
+    end
+
+    return true
+end
+
+function AutoProgress.SetStrategy(strategy)
+    AutoProgressStrategy = strategy == "Lose" and "Lose" or "Win"
+    shared.AutoProgressStrategy = AutoProgressStrategy
+    
+    return AutoProgressStrategy
+end
+
+function AutoProgress.GetStrategy()
+    return AutoProgressStrategy
+end
+
+function AutoProgress.SetEnabled(state)
+    if state then
+        return AutoProgress.Start()
+    end
+
+    return AutoProgress.Stop()
+end
+
+function AutoProgress.IsEnabled()
+    return AutoProgression == true
+end
+
+function AutoProgress.GetLevel()
+    return tonumber(Settings.SavedLevel) or 0
+end
+
+function AutoProgress.GetStatus()
+    if Settings.GatlingUnlocked == true then
+        return "Gatling Unlocked"
+    end
+
+    return tostring(statusDisplay.Text or "Status: Disabled")
+end
+
+
+
+UpdateToggleAppearance()
+
+local rewardGameOverHandled = false
+local restartMatchLoopRunning = false
+
+local function HandleRewardMilestone(currentMode, newLevel)
+    newLevel = tonumber(newLevel) or 0
+
+    if not AutoProgression then
+        return false
+    end
+
+    if IsWinStrategy() then
+        statusDisplay.Text = "Status: Returning to Lobby..."
+        BackToLobby()
+        return true
+    end
+
+    if currentMode == "Hardcore" and newLevel >= 175 then
+        return RouteProgressionByLevel(newLevel, true)
+    end
+
+    if currentMode == "Molten" and newLevel >= 50 then
+        statusDisplay.Text = "Status: Returning to Lobby..."
+        BackToLobby()
+        return true
+    end
+
+    if currentMode == "Easy" and newLevel >= 15 then
+        statusDisplay.Text = "Status: Returning to Lobby..."
+        BackToLobby()
+        return true
+    end
+
+    return false
+end
+
+local function RestartMatchAndRerunStrategy()
+    if restartMatchLoopRunning or not AutoProgression then
+        return false
+    end
+
+    if not IsInGame() or GetStoryMissionName() then
+        return false
+    end
+
+    local stateReplicators =
+        ReplicatedStorage:FindFirstChild("StateReplicators")
+
+    local rep =
+        stateReplicators
+        and stateReplicators:FindFirstChild("GameStateReplicator")
+
+    if not rep then
+        return false
+    end
+
+    repeat
+        if not AutoProgression then
+            return false
+        end
+
+        task.wait(0.1)
+    until rep:GetAttribute("GameOver") == true
+
+    restartMatchLoopRunning = true
+
+    if IsWinStrategy() then
+        local health = tonumber(rep:GetAttribute("Health")) or 0
+
+        if health <= 0 then
+            statusDisplay.Text = "Status: Lost - Returning to Lobby..."
+            restartMatchLoopRunning = false
+            BackToLobby()
+            return true
+        end
+    end
+
+    statusDisplay.Text = IsWinStrategy() and "Status: Rematching..." or "Status: Restarting Match..."
+
+    local restarted, restartResult = pcall(function()
+        if IsWinStrategy() then
+            if Globals.PrivateCode
+                and Globals.PrivateCode ~= "" then
+
+                statusDisplay.Text = "Status: Returning to Private Lobby..."
+                BackToLobby()
+                return true
+            end
+
+            local rematchEvent = ReplicatedStorage
+                :WaitForChild("Network")
+                :WaitForChild("GameManager")
+                :WaitForChild("RE:Rematch")
+
+            rematchEvent:FireServer()
+            return true
+        end
+
+        return ReplicatedStorage
+            :WaitForChild("RemoteFunction")
+            :InvokeServer(
+                "Voting",
+                "Skip"
+            )
+    end)
+
+    if not restarted then
+        warn(IsWinStrategy() and "Failed to rematch:" or "Failed to restart match:", restartResult)
+        statusDisplay.Text = "Status: Restart Failed"
+        restartMatchLoopRunning = false
+        return false
+    end
+
+    local timeoutAt = os.clock() + 45
+
+    repeat
+        if not AutoProgression then
+            restartMatchLoopRunning = false
+            return false
+        end
+
+        task.wait(0.1)
+    until rep:GetAttribute("GameOver") == false
+        or os.clock() >= timeoutAt
+
+    if rep:GetAttribute("GameOver") ~= false then
+        statusDisplay.Text = "Status: Restart Timed Out"
+        restartMatchLoopRunning = false
+        return false
+    end
+
+    task.wait(2)
+
+    StartMatchTimeout()
+
+    task.spawn(function()
+        task.wait(60)
+
+        if not AutoProgression then
+            return
+        end
+
+        local ownedTowers = DirectGetOwnedTowers()
+
+        if next(ownedTowers) == nil then
+            warn("[ANTI STUCK] No tower placed after restart, rejoining...")
+
+            pcall(function()
+                TeleportService:Teleport(
+                    game.PlaceId,
+                    plr
+                )
+            end)
+        end
+    end)
+
+    TDS:ResetIndex()
+
+    running = false
+    runningEasy = false
+    runningMolten = false
+    runningHardcore = false
+
+    if not CurrentStrategyRunner then
+        warn("[AUTO RESTART] No saved strategy runner")
+        statusDisplay.Text = "Status: No Strategy To Re-run"
+        restartMatchLoopRunning = false
+        return false
+    end
+
+    statusDisplay.Text =
+        "Status: Re-running "
+        .. tostring(CurrentStrategyName or "Strategy")
+
+    restartMatchLoopRunning = false
+
+    task.spawn(function()
+        
+
+        local ok, result = pcall(CurrentStrategyRunner)
+
+        if not ok then
+            warn("[AUTO RESTART] Strategy error:", result)
+        elseif result == false then
+            warn("[AUTO RESTART] Strategy returned false")
+        end
+    end)
+
+    return true
+end
+
+task.spawn(function()
+    while true do
+        task.wait(0.1)
+
+        if IsInGame() then
+            local stateReplicators =
+                ReplicatedStorage:FindFirstChild("StateReplicators")
+
+            local rep =
+                stateReplicators
+                and stateReplicators:FindFirstChild("GameStateReplicator")
+
+            local isGameOver =
+                rep and rep:GetAttribute("GameOver") == true
+
+            if not isGameOver then
+                rewardGameOverHandled = false
+            elseif not rewardGameOverHandled then
+                rewardGameOverHandled = true
+                ResetMatchTimeout()
+                
+
+                local storyMission = GetStoryMissionName()
+
+                if not storyMission then
+                    UpdateTrackedCoinsFromReward()
+                end
+
+                if not storyMission and AutoProgression then
+                    local oldLevel =
+                        tonumber(Settings.SavedLevel) or 0
+
+                    local captured, rewardLevel =
+                        CaptureRewardLevel()
+
+                    if captured and AutoProgression then
+                        rewardLevel = tonumber(rewardLevel) or oldLevel
+
+                        local currentMode = GetCurrentDifficulty()
+                        local currentTarget
+
+                        if IsWinStrategy() then
+                            currentTarget = GetTargetLevel(oldLevel)
+                        elseif currentMode == "Easy" then
+                            currentTarget = 15
+                        elseif currentMode == "Molten" then
+                            currentTarget = 50
+                        elseif currentMode == "Hardcore" then
+                            currentTarget = 175
+                        else
+                            currentTarget = GetTargetLevel(oldLevel)
+                        end
+
+                        if rewardLevel >= 175 then
+                            local trackedCoins = GetTrackedCoins()
+
+                            if trackedCoins >= GATLING_PRICE then
+                                task.spawn(function()
+                                    task.wait(0.5)
+                                    statusDisplay.Text = "Status: Returning to Lobby for Gatling..."
+                                    BackToLobby()
+                                end)
+                            elseif currentMode == "Hardcore" then
+                                task.spawn(function()
+                                    task.wait(0.5)
+                                    RouteProgressionByLevel(
+                                        rewardLevel,
+                                        true
+                                    )
+                                end)
+                            else
+                                task.spawn(function()
+                                    task.wait(0.5)
+                                    RestartMatchAndRerunStrategy()
+                                end)
+                            end
+                        else
+                            local reachedTarget =
+                                currentTarget ~= nil
+                                and rewardLevel >= currentTarget
+
+                            if reachedTarget then
+                                task.spawn(function()
+                                    task.wait(0.5)
+                                    HandleRewardMilestone(
+                                        currentMode,
+                                        rewardLevel
+                                    )
+                                end)
+                            else
+                                task.spawn(function()
+                                    task.wait(0.5)
+                                    RestartMatchAndRerunStrategy()
+                                end)
+                            end
+                        end
+                    else
+                        statusDisplay.Text = "Status: Failed to read reward level"
+                    end
+                end
+            end
+        else
+            rewardGameOverHandled = false
+            restartMatchLoopRunning = false
+            wrongDifficultyMatchmakingRunning = false
+        end
+    end
+end)
+
+task.spawn(function()
+    while true do
+        task.wait(0.2)
+
+        local displayLevel =
+            tonumber(Settings.SavedLevel) or 0
+
+        if IsInGame() then
+            local storyMission = GetStoryMissionName()
+
+            if storyMission then
+                gameStateDisplay.Text =
+                    "Location: Story Mode: " .. storyMission
+
+                if AutoProgression
+                    and Settings.Chapter0Completed ~= true then
+                    statusDisplay.Text =
+                        "Status: Grinding " .. storyMission
+                end
+            else
+                local currentDifficulty = GetCurrentDifficulty()
+
+                if currentDifficulty then
+                    gameStateDisplay.Text =
+                        "Location: In Game - " .. currentDifficulty
+                else
+                    gameStateDisplay.Text = "Location: In Game"
+                end
+
+                if AutoProgression
+                    and Settings.Chapter0Completed == true then
+
+                    local expectedDifficulty =
+                        IsWinStrategy() and "Easy" or GetProgressModeName(displayLevel)
+
+                    if expectedDifficulty == "Completed" then
+                        statusDisplay.Text = "Status: Completed"
+                    elseif currentDifficulty
+                        and currentDifficulty ~= expectedDifficulty then
+                        statusDisplay.Text = string.format(
+                            "Status: Wrong Difficulty (%s / %s)",
+                            currentDifficulty,
+                            expectedDifficulty
+                        )
+
+                        if not wrongDifficultyMatchmakingRunning then
+                            wrongDifficultyMatchmakingRunning = true
+
+                            task.spawn(function()
+                                task.wait(0.5)
+
+                                if AutoProgression then
+                                    statusDisplay.Text = "Status: Returning to Lobby..."
+
+                                    BackToLobby()
+                                end
+
+                                task.wait(3)
+                                wrongDifficultyMatchmakingRunning = false
+                            end)
+                        end
+                    elseif not statusDisplay.Text:find("Matchmaking", 1, true) then
+                        statusDisplay.Text =
+                            "Status: Grinding " .. expectedDifficulty
+                    end
+                end
+            end
+        elseif game.PlaceId == LOBBY_PLACE_ID then
+            gameStateDisplay.Text = "Location: Lobby"
+
+            if AutoProgression
+                and Settings.Chapter0Completed == true then
+
+                local progressMode =
+                    IsWinStrategy() and "Easy" or GetProgressModeName(displayLevel)
+
+                if progressMode == "Completed" then
+                    statusDisplay.Text = "Status: Completed"
+                elseif not statusDisplay.Text:find("Matchmaking", 1, true)
+                    and not statusDisplay.Text:find("Loading", 1, true)
+                    and not statusDisplay.Text:find("Retrying", 1, true) then
+                    statusDisplay.Text =
+                        "Status: Grinding " .. progressMode
+                end
+            end
+        else
+            gameStateDisplay.Text =
+                "Location: Loading Next Mission..."
+        end
+
+        if Settings.ProgressInitialized == true then
+            levelDisplay.Text = string.format(
+                "Current Level: %d",
+                displayLevel
+            )
+
+            local targetLevel = GetTargetLevel(displayLevel)
+
+            if targetLevel then
+                targetDisplay.Text = string.format(
+                    "Target: Level %d",
+                    targetLevel
+                )
+            elseif displayLevel >= 175 and AutoProgression then
+                targetDisplay.Text = "Target: Gatling Gun"
+            else
+                targetDisplay.Text = "Target: Completed"
+            end
+        else
+            levelDisplay.Text = "Current Level: 0"
+            targetDisplay.Text = "Loading Progress..."
+        end
+    end
+end)
+
+shared.AutoProgress = AutoProgress
+return AutoProgress
