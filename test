@@ -3926,9 +3926,8 @@ end
 
 local function RouteAutoMaxLevel175(directMatchmaking)
     if game.PlaceId ~= LOBBY_PLACE_ID then
-        statusDisplay.Text = "Status: Returning to Lobby to Check Auto Max..."
-        BackToLobby()
-        return true
+        statusDisplay.Text = "Status: Waiting for Lobby to Check Auto Max..."
+        return false
     end
 
     if not IsTowerOwned(GATLING_TOWER) then
